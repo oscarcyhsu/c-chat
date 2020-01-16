@@ -357,7 +357,7 @@ int bye(int sockfd)
 
 int send_msg(int sockfd, char username[], char content[]){
    char buf[1100];
-   sprintf(buf, "L#%s#%s#", username, content);
+   sprintf(buf, "M#%s#%s$", username, content);
    if (write(sockfd, buf, strlen(buf)) <= 0)
    {
       perror("error while writing to server:");

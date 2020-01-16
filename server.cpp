@@ -28,9 +28,11 @@ typedef struct
    int fd;
    char host[50];
 } conn;
+
 int online_num = 0;
 vector<client> clis; //clients
 pthread_mutex_t m_lock = PTHREAD_MUTEX_INITIALIZER;
+
 void *deal_with_client(void *cli);
 int main(int argc, char **argv)
 {
@@ -48,6 +50,7 @@ int main(int argc, char **argv)
          exit(-1);
       }
    }
+
    
    int listenfd, port;
    int thread_num = atoi(argv[2]);
@@ -114,6 +117,10 @@ void *deal_with_client(void *con)
 {
    int fd = ((conn *)con)->fd;
    char host[50];
+   fd_set workingR_set, reading_set;
+   FD_ZERO(&reading_set);
+   FD_SET(fd, &reading_set);
+
    strcpy(host, ((conn *)con)->host);
    free(con);
 
@@ -262,60 +269,73 @@ void *deal_with_client(void *con)
    }
    while (1)
    {
-      if (read(fd, buf, sizeof(buf)) < 0)
-      {
-         perror("read");
-         return 0;
-      }
-      if (buf[0] == 'L') //online userlist
-      {
-         if(pthread_mutex_lock(&m_lock)< 0 ){perror("mutex_lock");return 0;}
-
-			sprintf(buf,"number of accounts insys : %d\n",clis.size());
-			if(write(fd,buf,strlen(buf)) < 0 ){ perror("write"); return 0;}
-			for(j =0; j<clis.size();j++){
-				if(1){
-					sprintf(buf,"%s#%d#%s#%s\n", clis[j].name, clis[j].online, clis[j].host, clis[j].port);
-					if(write(fd,buf,strlen(buf)) < 0 ){ perror("write"); return 0;}
-				}
-			}
-			if(pthread_mutex_unlock(&m_lock)< 0 ){perror("mutex_unlock");return 0;}
-      }
-      else if (buf[0] == 'E')
-      {
-         //log out
-         sprintf(buf, "Bye\n");
-         if (pthread_mutex_lock(&m_lock) < 0)
-         {
-            perror("mutex_lock");
-            return 0;
-         }
-         online_num--;
-         clis[user_num].online = 0;
-         if (pthread_mutex_unlock(&m_lock) < 0)
-         {
-            perror("mutex_unlock");
-            return 0;
-         }
-         if (write(fd, buf, strlen(buf)) < 0)
-         {
-            perror("write");
-            return 0;
-         }
-         close(fd);
-         break;
-      }
-      else if (buf[0] == 'M')
-      {
-         char *p_username, *p_content;
-         strtok(buf, "#");
-         p_username = strtok(NULL, "#");
-         p_content = strtok(NULL, "#");
-         for (j = 0; j < clis.size(); j++)
-         {
-
-            if (clis[j].online)
+      // select on packet from client and FIFO
+      
+      memcpy(&workingR_set, &reading_set, sizeof(reading_set));
+      select(128, &workingR_set, NULL, NULL, NULL);
+      printf("after sel\n");
+      for(int i = 0; i <= 128; i++){
+         if (FD_ISSET(i, &workingR_set)){
+            printf("fd: %d is set\n", i);
+            if (read(fd, buf, sizeof(buf)) < 0)
             {
+               perror("read");
+               return 0;
+            }
+            if (buf[0] == 'L') //online userlist
+            {
+               if(pthread_mutex_lock(&m_lock)< 0 ){perror("mutex_lock");return 0;}
+
+               sprintf(buf,"number of accounts insys : %d\n",clis.size());
+               if(write(fd,buf,strlen(buf)) < 0 ){ perror("write"); return 0;}
+               for(j =0; j<clis.size();j++){
+                  if(1){
+                     sprintf(buf,"%s#%d#%s#%s\n", clis[j].name, clis[j].online, clis[j].host, clis[j].port);
+                     if(write(fd,buf,strlen(buf)) < 0 ){ perror("write"); return 0;}
+                  }
+               }
+               if(pthread_mutex_unlock(&m_lock)< 0 ){perror("mutex_unlock");return 0;}
+            }
+            else if (buf[0] == 'E')
+            {
+               //log out
+               sprintf(buf, "Bye\n");
+               if (pthread_mutex_lock(&m_lock) < 0)
+               {
+                  perror("mutex_lock");
+                  return 0;
+               }
+               online_num--;
+               clis[user_num].online = 0;
+               if (pthread_mutex_unlock(&m_lock) < 0)
+               {
+                  perror("mutex_unlock");
+                  return 0;
+               }
+               if (write(fd, buf, strlen(buf)) < 0)
+               {
+                  perror("write");
+                  return 0;
+               }
+               close(fd);
+               FD_CLR(fd, &reading_set);
+               return 0;
+            }
+            else if (buf[0] == 'M')
+            {
+               strtok(buf, "$"); // use $ as end, because content may have newline characters
+               printf("message, buf<%s>\n", buf);
+               // char *p_username, *p_content;
+               // strtok(buf, "#");
+               // p_username = strtok(NULL, "#");
+               // p_content = strtok(NULL, "#");
+               // for (j = 0; j < clis.size(); j++)
+               // {
+
+               //    if (clis[j].online)
+               //    {
+               //    }
+               // }
             }
          }
       }
