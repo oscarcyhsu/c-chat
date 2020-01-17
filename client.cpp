@@ -10,6 +10,8 @@
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <signal.h>
+#include <assert.h>
 
 using namespace std;
 

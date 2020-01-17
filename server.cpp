@@ -8,10 +8,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <arpa/inet.h>
 #include <vector>
+#include <signal.h>
+#include <assert.h>
+#include <openssl/sha.h>
 
 using namespace std;
 
