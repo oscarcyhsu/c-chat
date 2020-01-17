@@ -11,6 +11,8 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/stat.h>
+#include <signal.h>
+#include <assert.h>
 
 using namespace std;
 
@@ -44,6 +46,7 @@ vector<file> files;
 vector<client> clis;
 pthread_mutex_t cli_lock = PTHREAD_MUTEX_INITIALIZER;
 int socket_close_on_INT;
+char my_username[50];
 
 int reg(int sockfd);
 int sign(int sockfd);
@@ -58,6 +61,8 @@ void handle_offline_msg(char *buf, int sockfd, int read_len);
 int find_user(char *name);
 
 int send_msg(int sockfd, char username[], char content[]);
+int dump_history(int sockfd, char* withwho);
+
 void SIGINT_handler(int signo){
    bye(socket_close_on_INT);
    exit(-1);
@@ -77,7 +82,7 @@ int main(int argc, char **argv)
    int sockfd;
 
    struct sockaddr_in addr;
-   char* p_from, *p_content;
+   char* p_from, *p_to, *p_content;
 
    addr.sin_family = AF_INET;
    addr.sin_port = htons(atoi(argv[2]));
@@ -132,7 +137,7 @@ int main(int argc, char **argv)
                exit(-1);
             }
             input[read_len - 1] = '\0'; // newline -> \0
-            printf("input:<%s>", input);
+            printf("input:<%s>\n", input);
             if (input[0] == 'Q')
                bye(sockfd);
             else if (input[0] == 'U'|| input[0] == 'T'){
@@ -147,7 +152,7 @@ int main(int argc, char **argv)
                   perror("Connection abort:");
                   exit(0);
                }
-               printf("read:<%s>, readlen:<%d>", buf, read_len);
+               //printf("read:<%s>, readlen:<%d>", buf, read_len);
                handle_list(buf, sockfd, read_len);
                if(input[0] == 'T')
                   transfer();
@@ -168,6 +173,12 @@ int main(int argc, char **argv)
                else{ sprintf(content, "%s\0", p);}
                send_msg(sockfd, username, content);
             }
+            else if( input[0] == 'D'){ //dump history
+               strtok(input, "-");
+               p_to = strtok(NULL, "-");
+               printf("dump history with <%s>\n", p_to);
+               dump_history(sockfd, p_to);
+            }
             printf("Enter (Q: quit, U: update the list, M: message):\n");
          }
 
@@ -177,6 +188,7 @@ int main(int argc, char **argv)
                perror("read async message");
                exit(-1);
             }
+            printf("sockfd buf:<%s>\n", buf);
             strtok(buf, "\n");
             assert(buf[0] == 'A'); // check async message
             printf("new message!\n");
@@ -277,6 +289,7 @@ int sign(int sockfd)
       else
          printf("2~20 number or char!\n\n");
    }
+   
    key = 1;
    char port[20];
    while (key)
@@ -317,13 +330,13 @@ int sign(int sockfd)
 
    char buf[1000];
    sprintf(buf, "S#%s#%s\n", input, port);
-
    if (write(sockfd, buf, strlen(buf)) < 0)
    {
       perror("Error while sending to server:");
       exit(0);
    }
 
+   strcpy(my_username, input);
    int read_len;
 
    if ((read_len = read(sockfd, buf, 1000)) <= 0)
@@ -332,16 +345,18 @@ int sign(int sockfd)
       exit(0);
    }
 
-   printf("readlen %d\n", read_len);
+   //printf("readlen %d\n", read_len);
 
    if (strstr(buf, "220 AUTH_FAIL") == NULL)
    {
       handle_list(buf, sockfd, read_len);
       if ((read_len = read(sockfd, buf, 1000)) <= 0){perror("Connection abort:"); exit(0);}
-      buf[read_len] = '\0';
-      if(strstr(buf, "you have offline msg\n") == 0){
+      if(strstr(buf, "you have offline msg\n") != NULL){
          printf("you have offline msg\n");
          handle_offline_msg(buf, sockfd, read_len);
+      }
+      else{
+         printf("no new msg\n");
       }
       return 0;
    }
@@ -368,7 +383,7 @@ void handle_list(char *buf, int sockfd, int read_len)
 	for (i = 0; i < ac_num; i++)
 	{
 		client cli;
-      printf("tmp/readlen:%d/%d\n", tmp, read_len);
+      //printf("tmp/readlen:%d/%d\n", tmp, read_len);
 		if (tmp == read_len)
 		{
          if ((read_len = read(sockfd, buf, 1000)) <= 0)
@@ -377,7 +392,7 @@ void handle_list(char *buf, int sockfd, int read_len)
             exit(0);
          }
          tmp = 0;
-         printf("buf:%s\n", buf);
+         //printf("buf:%s\n", buf);
 		}
 
 		user = strtok(buf + tmp, "#");
@@ -408,7 +423,7 @@ void handle_list(char *buf, int sockfd, int read_len)
 void handle_offline_msg(char *buf, int sockfd, int read_len){
    int tmp = 0;
    char* p_from, *p_content;
-
+   //printf("handling<%s>\n", buf);
    strtok(buf, "\n");
    tmp += strlen(buf)+1;
 
@@ -421,14 +436,19 @@ void handle_offline_msg(char *buf, int sockfd, int read_len){
             exit(0);
          }
          tmp = 0;
-         printf("buf:%s\n", buf);
+         //printf("buf:%s\n", buf);
       }
-      p_from = strtok(buf + tmp, "#");
-		tmp += strlen(p_from) + 1;
 
+      p_from = strtok(buf + tmp, "#");
+      //printf("p_from:<%s>\n", p_from);
+		tmp += strlen(p_from) + 1;
+      if(p_from[0] == '$'){
+         break;
+      }
 		p_content = strtok(NULL, "$");
+      //printf("p_content:<%s>\n", p_content);
 		tmp += strlen(p_content) + 1;
-		printf("<%s>:%s", p_from, p_content);
+		printf("<%s>:%s\n", p_from, p_content);
    }
 }
 
@@ -473,6 +493,7 @@ int send_msg(int sockfd, char username[], char content[]){
    return 1;
 }
 
+<<<<<<< HEAD
 void* wait_for_pay(void *listenfd){
     long long lifd = (long long)listenfd;
     if(listen((int)lifd,10) < 0)
@@ -710,5 +731,57 @@ int popfile(){
    free(files[size()-1].content);
    pthread_mutex_unlock(&m_lock);
    files.pop_back();
+}
+
+int dump_history(int sockfd, char* withwho){
+   char buf[1100], read_len;
+   char *p_who, *p_from, *p_content;
+
+   int tmp = 0, readlen = 0;
+
+   sprintf(buf, "D#%s\n", withwho);
+   if (write(sockfd, buf, strlen(buf)) <= 0)
+   {
+      perror("error while writing to server:");
+      exit(0);
+   }
+   // todo parse return history
+   while(1){
+      if (tmp == read_len)
+		{
+         if ((read_len = read(sockfd, buf, 1000)) <= 0)
+         {
+            perror("Connection abort:");
+            exit(0);
+         }
+         tmp = 0;
+         //printf("buf:%s\n", buf);
+      }
+
+      p_from = strtok(buf + tmp, "#");
+      //printf("p_from:<%s>\n", p_from);
+		tmp += strlen(p_from) + 1;
+      if(p_from[0] == '$'){
+         printf("end of history\n");
+         return 0;
+      }
+		p_content = strtok(NULL, "$");
+      //printf("p_content:<%s>\n", p_content);
+		tmp += strlen(p_content) + 1;
+      if(strcmp(my_username, p_from) == 0)
+		   printf("<%s>\n%s\n\n", p_from, p_content);
+      else{
+         int len;
+         len = strlen(p_from)+2;
+         for(int j = 0; j < 20-len;j++)
+            printf(" ");
+         printf("<%s>\n", p_from);
+
+         len = strlen(p_content);
+         for(int j = 0; j < 20-len;j++)
+            printf(" ");
+         printf("%s\n\n", p_content);
+      }
+   }
 }
 

@@ -8,15 +8,23 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <arpa/inet.h>
 #include <vector>
+#include <signal.h>
+#include <assert.h>
+#include <openssl/sha.h>
 
 using namespace std;
 
 #define L_ONLINE 1
 #define L_OFFLINE 0
+typedef struct
+{
+   char name[50];
+} Array;
 
 typedef struct
 {
@@ -24,7 +32,6 @@ typedef struct
    char port[7];
    char host[50];
    char name[100];
-
 } client;
 typedef struct
 {
@@ -39,16 +46,28 @@ typedef struct{
 
 int online_num = 0;
 vector<client> clis; //clients
-pthread_mutex_t m_lock = PTHREAD_MUTEX_INITIALIZER;
+vector<int>  locked_log;
 
-int set_lock(int file_fd, int msg_id, int type)
+pthread_mutex_t m_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t tok_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t f_lock = PTHREAD_MUTEX_INITIALIZER;
+
+
+int set_lock(int file_fd, int type)
 {
-   struct flock lock;
-   lock.l_whence = SEEK_SET;
-   lock.l_type = type;
-   lock.l_start = msg_id * sizeof(msg);
-   lock.l_len = sizeof(msg);
-   return fcntl(file_fd, F_SETLKW, &lock);
+   if (pthread_mutex_lock(&f_lock) < 0) { perror("mutex_lock"); return -1; }
+   if(type == F_ULOCK){
+      for(int j = 0; j < locked_log.size(); j++){
+         if(locked_log[j] == file_fd){
+            locked_log.erase(locked_log.begin() + j);
+         }
+      }
+   }
+   else if(type == F_WRLCK || type == F_RDLCK){
+      locked_log.push_back(file_fd);
+   }
+   if (pthread_mutex_unlock(&f_lock) < 0) { perror("mutex_lock"); return -1; }
+   return 0;
 }
 
 void *deal_with_client(void *cli);
@@ -176,8 +195,11 @@ void *deal_with_client(void *con)
       if (buf[0] == 'R')
       {
          key = 1;
+         if (pthread_mutex_lock(&tok_lock) < 0) { perror("mutex_lock"); return 0; }
          name = strtok(buf, "#");
          name = strtok(NULL, "\n");
+         if (pthread_mutex_unlock(&tok_lock) < 0) { perror("mutex_unlock"); return 0; }
+
          //lock mutex for check
          if (pthread_mutex_lock(&m_lock) < 0)
          {
@@ -279,8 +301,10 @@ void *deal_with_client(void *con)
       {
          //sign
          char *port;
+         if (pthread_mutex_lock(&tok_lock) < 0) { perror("mutex_lock"); return 0; }
          name = strtok(buf + 1, "#");
          port = strtok(NULL, "\n");
+         if (pthread_mutex_unlock(&tok_lock) < 0) { perror("mutex_unlock"); return 0; }
          strcpy(my_client.name, name);
          strcpy(my_client.port, port);
          if (pthread_mutex_lock(&m_lock) < 0)
@@ -327,7 +351,7 @@ void *deal_with_client(void *con)
                // send offline msg
                sprintf(path, "log/%s/logfile", my_client.name);
                if ((logfile = open(path, O_RDWR)) < 0) { perror("open logfile"); exit(-1); }
-               if(set_lock(logfile, 0, F_WRLCK) < 0) {perror("set lock"); exit(-1); }
+               if(set_lock(logfile, F_WRLCK) < 0) {perror("set lock"); exit(-1); }
                // retrieve unread message
                if(pread(logfile, &num_msg, sizeof(int), 0) < 0) {perror("read"); exit(-1); }
                if(pread(logfile, &read_msg, sizeof(int), sizeof(int)) < 0) {perror("read"); exit(-1); }
@@ -342,12 +366,18 @@ void *deal_with_client(void *con)
                      sprintf(buf, "%s#%s$", message.from, message.content);
                      if (write(fd, buf, strlen(buf)) < 0){ perror("write"); exit(-1);}
                   }
+                  sprintf(buf, "#$"); //end of msg
+                  write(fd, buf, strlen(buf));
+
+                  if(pwrite(logfile, &num_msg, sizeof(int), sizeof(int)) < 0) {perror("write log"); exit(-1);}
+                  if(pread(logfile, &read_msg, sizeof(int), sizeof(int)) < 0) {perror("read"); exit(-1); }
+                  printf("after handle unread, num_msg<%d>/read_msg<%d>\n", num_msg, read_msg);
                }
                else{
                   sprintf(buf, "no new msg\n");
                   if (write(fd, buf, strlen(buf)) < 0){perror("write"); exit(-1);}
                }
-               if(set_lock(logfile, 0, F_UNLCK) < 0) {perror("unlock"); exit(-1); }
+               if(set_lock(logfile, F_UNLCK) < 0) {perror("unlock"); exit(-1); }
                if(close(logfile)<0) {perror("close logfile"); exit(-1); }
 
                break;
@@ -445,13 +475,16 @@ void *deal_with_client(void *con)
             }
             else if (buf[0] == 'M')
             {
+               if (pthread_mutex_lock(&tok_lock) < 0) { perror("mutex_lock"); return 0; }
                strtok(buf, "$"); // use $ as end, because content may have newline characters
                printf("message, buf<%s>\n", buf);
 
                char *p_to_username, *p_content;
                strtok(buf, "#");
+
                p_to_username = strtok(NULL, "#");
                p_content = strtok(NULL, "#");
+               if (pthread_mutex_unlock(&tok_lock) < 0) { perror("mutex_unlock"); return 0; }
                assert(strcmp(my_client.name, p_to_username) != 0);
 
                // todo: add log
@@ -473,9 +506,11 @@ void *deal_with_client(void *con)
                }
                for (j = 0; j < clis.size(); j++)
                {
+                  printf("matching name:%s/%s\n", p_to_username, clis[j].name);
                   if (strcmp(p_to_username, clis[j].name) == 0)
                   {
                      if(clis[j].online){
+                        printf("%s is online\n", clis[j].name);
                         sprintf(path, "log/%s/fifo", message.to);
                         printf("open path:<%s>\n", path);
                         if ((fifo_w = open(path, O_WRONLY)) < 0)
@@ -500,13 +535,15 @@ void *deal_with_client(void *con)
                         if(close(logfile)<0) {perror("close logfile"); exit(-1); }
                      }
                      else{
+                        printf("%s is offline\n", clis[j].name);
                         sprintf(path, "log/%s/logfile", message.to);
                         if ((logfile = open(path, O_RDWR)) < 0) { perror("open logfile"); exit(-1); }
                         set_log(logfile, message, L_OFFLINE);
                         if(close(logfile)<0) {perror("close logfile"); exit(-1); }
                      }
+                     break;
                   }
-                  break;
+                  
                }
                if (pthread_mutex_unlock(&m_lock) < 0)
                {
@@ -521,6 +558,39 @@ void *deal_with_client(void *con)
                   exit(-1);
                }
             }
+            else if (buf[0] == 'D'){
+               // todo D-type
+               char *p, chat_with[50];
+               if (pthread_mutex_lock(&tok_lock) < 0) { perror("mutex_lock"); return 0; }
+               strtok(buf, "\n");
+               strtok(buf, "#");
+               p = strtok(NULL, "#");
+               strcpy(chat_with, p);
+               printf("chat with<%s>\n", chat_with);
+               sprintf(path, "log/%s/logfile", my_client.name);
+               printf("dump logfile:<%s>\n", path);
+               if((logfile = open(path, O_RDONLY)) < 0){perror("open logfile"); return 0;}
+               if(set_lock(logfile, F_RDLCK) < 0){perror("lock logfile"); return 0;}
+               
+               pread(logfile, &num_msg, sizeof(int), 0);
+               printf("num_msg:%d\n", num_msg);
+               for(int j = 1; j <= num_msg; j++){
+                  pread(logfile, &message, sizeof(msg), j*sizeof(msg));
+                  printf("message:from/p_with<%s/%s>, content<%s>\n", message.from, chat_with, message.content);
+                  if(strcmp(message.from, chat_with) == 0 || strcmp(message.to, chat_with) == 0){
+                     printf("message match:from<%s>, content<%s>\n", message.from, message.content);
+                     sprintf(buf, "%s#%s$", message.from, message.content);
+                     if(write(fd, buf, strlen(buf)) < 0){perror("write"); return 0;}
+                  }
+               }
+               sprintf(buf, "#$");
+               if(write(fd, buf, strlen(buf)) < 0){perror("write"); return 0;}
+
+               if(set_lock(logfile, F_UNLCK) < 0){perror("unlock logfile"); return 0;}
+               if(close(logfile) < 0){perror("close logfile"); return 0;}
+
+               if (pthread_mutex_unlock(&tok_lock) < 0) { perror("mutex_unlock"); return 0; }
+            }
          }
          else if (FD_ISSET(i, &workingR_set) && i == fifo_r)
          {
@@ -533,7 +603,9 @@ void *deal_with_client(void *con)
             }
             else if(read_len > 0){ // close will make fifo readable but read return 0
                printf("fifo_r: %d is ready to be read\n", i);
+               if (pthread_mutex_lock(&tok_lock) < 0) { perror("mutex_lock"); return 0; }
                strtok(buf, "\n");
+               if (pthread_mutex_unlock(&tok_lock) < 0) { perror("mutex_unlock"); return 0; }
                printf("read from fifo:<%s>\n", buf);
                buf[strlen(buf)+1] = '\0';
                buf[strlen(buf)] = '\n';
@@ -551,7 +623,7 @@ void *deal_with_client(void *con)
 
 void set_log(int logfile, msg message, int online){
    int num_msg, read_msg;
-   if (set_lock(logfile, 0, F_WRLCK) < 0){ // get first entry of file to get access
+   if (set_lock(logfile, F_WRLCK) < 0){ // get first entry of file to get access
       perror("setlock");
       exit(-1);
    }
@@ -584,7 +656,7 @@ void set_log(int logfile, msg message, int online){
       }
    }
 
-   if (set_lock(logfile, 0, F_UNLCK) < 0){
+   if (set_lock(logfile, F_UNLCK) < 0){
       perror("freelock");
       exit(-1);
    }
