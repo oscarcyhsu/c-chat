@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/stat.h>
 
 using namespace std;
 
@@ -26,7 +27,7 @@ typedef struct{
    
    
    int file_size;
-   char *user,*name,*content;
+   char user[50],name[100],*content;
    
 }file;
 
@@ -517,9 +518,7 @@ void* deal_with_client(void *con){
 	if(write(fd,buf,keylen)<0){perror("write"); return 0;}
    int name_siz,file_siz;
    if(read(fd,&name_siz,sizeof(int))< 0){perror("read name size"); return 0;}
-   pthread_mutex_lock(&m_lock);
-   f1.name = malloc(name_siz+1);
-   pthread_mutex_unlock(&m_lock);
+  
 
    if(read(fd,f1.name,name_siz)){perror("read file name") return 0;}
    f1.name[name_siz] = '\0';
@@ -541,9 +540,7 @@ void* deal_with_client(void *con){
    len = read(fd,buf,100);
    if(len < 0){perror("read user name error"); return 0;}
    
-   pthread_mutex_lock(&m_lock);
-   f1.user = malloc(len+1);
-   pthread_mutex_unlock(&m_lock);
+
 
    for(int i;i<len;i++){f1.user[i] = buf[i];}
    f1.user[len] = '\0';
@@ -562,14 +559,50 @@ void* deal_with_client(void *con){
 
 int transfer(){
    
-   char user[50];
+   int file_fd;
+   char file_name[100];
+   int file_size;
+   printf("Enter the filename with path:\n");
+   scanf("%s",file_name);
+   struct stat st;
+   st = NULL;
+   stat(file_name, &st);
+   if (st == NULL){
+      perror("Invalid file");
+      return -1;
+   }
+   file_size = st.st_size;
+   pthread_mutex_lock(&m_lock);
+   file *f1 = malloc(sizeof(file));
+   pthread_mutex_unlock(&m_lock);
+
+   f1->file_size = file_size;
+   strcpy(f1->name,file_name);
+
+   
 
    printf("enter the user you want to transfer\n")
-   scanf("%s",user);
-   
-   pthread_mutex_lock(&cli_lock);
-   int user_num = find_user(user);
+   scanf("%s",f1->user);
+
+   pthread_t pnum;
+
+   pthread_create(&pnum,NULL,&BackTran,(void *)&f1);
+   pthread_detach(pnum);
+
+   return 0;  
+
+}
+
+void* BackTran(void *f){
    int sockfd;
+   file f1;
+   memcpy(&f1,f,sizeof(file));
+   pthread_mutex_lock(&m_lock);
+   free(f1);
+   pthread_mutex_lock(&m_lock);
+   pthread_mutex_lock(&cli_lock);
+   int user_num = find_user(f1.user);
+
    if(user_num!= -1){
       if(clis[user_num].online)
       {
@@ -590,35 +623,71 @@ int transfer(){
          user_num = -1;
       }
    }
-   
+      
    pthread_mutex_unlock(&cli_lock);
    if (user_num == -1){
-      printf("No this user online.");
+      printf("No the user: %s online.",f1.user);
+
       return -1;
    }
 
-	if(connect(sockfd,(struct sockaddr *)&addr,sizeof(struct sockaddr)) < 0)
-	{
-		perror("Connetion error:");
-		printf("Maybe the user is offline or abort.\n");
-		return -1;
-	}
-   char buf[100];
-   if(read(sockfd,buf,100)<0){perror("Not accept"); return -1;}
+   if(connect(sockfd,(struct sockaddr *)&addr,sizeof(struct sockaddr)) < 0)
+   {
+      perror("Connetion error:");
+      printf("Maybe the user is offline or abort.\n");
 
-   int key = 1;
-   int file_fd;
-   char file_name[100];
-   while(key){
-      scanf("%s",file_name);
+      return -1;
+   }
+   char buf[100];
+   if(read(sockfd,buf,100)<0){perror("Not accept"); free(f1); return 0;}
+   pthread_mutex_lock(&m_lock);
+   char *content = malloc(file_size);
+   pthread_mutex_lock(&m_lock);
+   int filefd = open(f1.name,O_RDONLY);
+   if(filefd< 0){perror("open error"); printf("check if the file exist\n"); return 0;   }
+   
+   if(read(filefd,content,f1.file_size)<0){perror("read file"); return 0;}
+   close(filefd);
+
+   int namelen= strlen(f1.name);
+   if(write(sockfd,&namelen,sizeof(int))< 0){perror("write fname len");return 0;}
+   if(write(sockfd,f1.name,strlen(f1.name)) < 0){perror("write fname"); return 0;}
+   if(write(sockfd,&f1.file_size,sizeof(int)) < 0) {perror("write file size"); return 0;}
+   
+   int tmp = 0;
+   int len;
+   while(tmp < f1.file_size){
+      len = write(sockfd,context + tmp, file_size-tmp);
+      if(len < 0){perror("error while transfering file"); return 0;}
+      tmp += len;
    }
 
+   if(write(sockfd,my_username,strlen(my_username))<0){perror("write name;"); return 0;}
 
+   if(read(sockfd,buf,10)<0){perror("reading end"); return 0;}
+   printf("finish file transfer\n");
+   close(sockfd);
+
+   
 }
 
 int save_file(){
-   
-
+   pthread_mutex_lock(&files_lock);
+   char name[100];
+   i = 0;
+   for(int i =0;i<files.size();i++)
+   {
+      printf("file from %s, name: %s, size: %d\n Save? [Y/N]\n",files[i].user,files[i].name,files[i].file_size);
+      char c;
+      scanf("%c",&c);
+      if(c == 'Y'){
+         printf("enter the file name to save\n");
+         scanf("%s",name);
+         int fd = open(name,O_WRONLY|O_CREAT|O_TRUNC);
+         if(write(fd,files[i].context,files[i].file_size)< 0 ){perror("error while writing the file");}
+      }
+   }
+   files.clear();
 
 }
 
@@ -632,4 +701,11 @@ int find_user(char *name){
    return -1;
 }
 
+int popfile(){
+
+   pthread_mutex_lock(&m_lock);
+   free(files[size()-1].content);
+   pthread_mutex_unlock(&m_lock);
+   files.pop_back();
+}
 
