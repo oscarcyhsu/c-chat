@@ -24,12 +24,19 @@ typedef struct
 
 vector<client> clis;
 pthread_mutex_t cli_lock = PTHREAD_MUTEX_INITIALIZER;
+int socket_close_on_INT;
 
 int reg(int sockfd);
 int sign(int sockfd);
 int bye(int sockfd);
 void handle_list(char *buf, int sockfd, int read_len);
+void handle_offline_msg(char *buf, int sockfd, int read_len);
+
 int send_msg(int sockfd, char username[], char content[]);
+void SIGINT_handler(int signo){
+   bye(socket_close_on_INT);
+   exit(-1);
+}
 void *wait_for_pay(void *listenfd)
 {
    long long lifd = (long long)listenfd;
@@ -49,6 +56,7 @@ int main(int argc, char **argv)
    int sockfd;
 
    struct sockaddr_in addr;
+   char* p_from, *p_content;
 
    addr.sin_family = AF_INET;
    addr.sin_port = htons(atoi(argv[2]));
@@ -70,6 +78,8 @@ int main(int argc, char **argv)
       perror("connetion error:");
    }
 
+   socket_close_on_INT = sockfd;
+   signal(SIGINT, SIGINT_handler);
    while (key)
    {
       printf("enter the number (0:register,1:sign in):\n");
@@ -84,45 +94,81 @@ int main(int argc, char **argv)
          key = sign(sockfd);
    }
    printf("Enter (Q: quit, U: update the list, M: message):\n");
-   while (scanf("%s", input))
-   {
-      if (input[0] == 'Q')
-         bye(sockfd);
-      else if (input[0] == 'U')
-      {
-         sprintf(buf, "List\n");
-         if (write(sockfd, buf, strlen(buf)) <= 0)
-         {
-            perror("error while writing to server:");
-            exit(0);
-         }
-         int read_len;
-         if ((read_len = read(sockfd, buf, 1000)) <= 0)
-         {
-            perror("Connection abort:");
-            exit(0);
-         }
-         printf("read:<%s>, readlen:<%d>", buf, read_len);
-         handle_list(buf, sockfd, read_len);
-      }
-      else if( input[0] == 'M'){
-         //send to user
-         char username[50], content[1000];
-         char* p;
-         strtok(input,"-");
-         p = strtok(NULL,"-");
-         printf("p1:%s\n", p);
-         if (p == NULL){ printf("format: M-username-conetent\n"); continue;}
-         else{ sprintf(username ,"%s\0", p);}
+   fd_set reading_set, workingR_set;
+   FD_ZERO(&reading_set);
+   FD_SET(STDIN_FILENO, &reading_set);
+   FD_SET(sockfd, &reading_set);
+   
+   while(1){
+      memcpy(&workingR_set, &reading_set, sizeof(reading_set));
+      select(128, &workingR_set, NULL, NULL, NULL);
+      int read_len;
+      for(int i = 0; i <= 128; i++){
+         if(FD_ISSET(i, &workingR_set) && i == STDIN_FILENO){
+            printf("fd: %d is ready to be read\n", i);
+            if((read_len = read(STDIN_FILENO, input, sizeof(input))) < 0){
+               perror("read input");
+               exit(-1);
+            }
+            input[read_len - 1] = '\0'; // newline -> \0
+            printf("input:<%s>", input);
+            if (input[0] == 'Q')
+               bye(sockfd);
+            else if (input[0] == 'U'){
+               sprintf(buf, "List\n");
+               if (write(sockfd, buf, strlen(buf)) <= 0)
+               {
+                  perror("error while writing to server:");
+                  exit(0);
+               }
+               if ((read_len = read(sockfd, buf, 1000)) <= 0)
+               {
+                  perror("Connection abort:");
+                  exit(0);
+               }
+               printf("read:<%s>, readlen:<%d>", buf, read_len);
+               handle_list(buf, sockfd, read_len);
+            }
+            else if( input[0] == 'M'){
+               //send to user
+               char username[50], content[1000];
+               char* p;
+               strtok(input,"-");
+               p = strtok(NULL,"-");
+               printf("p1:%s\n", p);
+               if (p == NULL){ printf("format: M-username-conetent\n"); continue;}
+               else{ sprintf(username ,"%s\0", p);}
 
-         p = strtok(NULL, "-");
-         printf("p2:%s\n", p);
-         if (p == NULL){ printf("format: M-username-conetent\n"); continue;}
-         else{ sprintf(content, "%s\0", p);}
-         send_msg(sockfd, username, content);
+               p = strtok(NULL, "-");
+               printf("p2:%s\n", p);
+               if (p == NULL){ printf("format: M-username-conetent\n"); continue;}
+               else{ sprintf(content, "%s\0", p);}
+               send_msg(sockfd, username, content);
+            }
+            printf("Enter (Q: quit, U: update the list, M: message):\n");
+         }
+
+         else if(FD_ISSET(i, &workingR_set) && i == sockfd){ // async message
+            printf("fd: %d is ready to be read\n", i);
+            if((read_len = read(sockfd, buf, sizeof(buf))) < 0){
+               perror("read async message");
+               exit(-1);
+            }
+            strtok(buf, "\n");
+            assert(buf[0] == 'A'); // check async message
+            printf("new message!\n");
+            strtok(buf, "#");
+            p_from = strtok(NULL, "#");
+            p_content = strtok(NULL, "#");
+            printf("<%s>:%s\n", p_from, p_content);
+         }
       }
-      printf("Enter (Q: quit, U: update the list, M: message):\n");
    }
+
+   // while (scanf("%s", input))
+   // {
+      
+   // }
 }
 
 int reg(int sockfd)
@@ -268,6 +314,12 @@ int sign(int sockfd)
    if (strstr(buf, "220 AUTH_FAIL") == NULL)
    {
       handle_list(buf, sockfd, read_len);
+      if ((read_len = read(sockfd, buf, 1000)) <= 0){perror("Connection abort:"); exit(0);}
+      buf[read_len] = '\0';
+      if(strstr(buf, "you have offline msg\n") == 0){
+         printf("you have offline msg\n");
+         handle_offline_msg(buf, sockfd, read_len);
+      }
       return 0;
    }
    else
@@ -308,26 +360,53 @@ void handle_list(char *buf, int sockfd, int read_len)
 		user = strtok(buf + tmp, "#");
 		strcpy(cli.name, user);
 		tmp += strlen(user) + 1;
-		printf("user %s\n", cli.name);
+		// printf("user %s\n", cli.name);
 
 		int online = atoi(strtok(NULL, "#"));
 		cli.online = online;
 		tmp += 2;
-		printf("online %d\n", cli.online);
+		// printf("online %d\n", cli.online);
 
 		userip = strtok(NULL, "#");
 		tmp += strlen(userip) + 1;
 		strcpy(cli.host, userip);
-		printf("ip %s\n", cli.host);
+		// printf("ip %s\n", cli.host);
 
 		userport = strtok(NULL, "\n");
 		tmp += strlen(userport) + 1;
 		cli.port = atoi(userport);
 		clis.push_back(cli);
-		printf("port %d\n", cli.port);
+		// printf("port %d\n", cli.port);
 
 		printf("User %d\nUser name : %s\nUser IP : %s\nUser port : %d\n\n", clis.size() - 1, clis[i].name, clis[i].host, clis[i].port);
 	}
+}
+
+void handle_offline_msg(char *buf, int sockfd, int read_len){
+   int tmp = 0;
+   char* p_from, *p_content;
+
+   strtok(buf, "\n");
+   tmp += strlen(buf)+1;
+
+   while(1){
+      if (tmp == read_len)
+		{
+         if ((read_len = read(sockfd, buf, 1000)) <= 0)
+         {
+            perror("Connection abort:");
+            exit(0);
+         }
+         tmp = 0;
+         printf("buf:%s\n", buf);
+      }
+      p_from = strtok(buf + tmp, "#");
+		tmp += strlen(p_from) + 1;
+
+		p_content = strtok(NULL, "$");
+		tmp += strlen(p_content) + 1;
+		printf("<%s>:%s", p_from, p_content);
+   }
 }
 
 int bye(int sockfd)
@@ -354,6 +433,8 @@ int bye(int sockfd)
       exit(0);
    }
 }
+
+
 
 int send_msg(int sockfd, char username[], char content[]){
    char buf[1100];

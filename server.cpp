@@ -15,6 +15,9 @@
 
 using namespace std;
 
+#define L_ONLINE 1
+#define L_OFFLINE 0
+
 typedef struct
 {
    int online, balance;
@@ -28,12 +31,29 @@ typedef struct
    int fd;
    char host[50];
 } conn;
+typedef struct{
+   char from[50];
+   char to[50];
+   char content[1000];
+} msg;
 
 int online_num = 0;
 vector<client> clis; //clients
 pthread_mutex_t m_lock = PTHREAD_MUTEX_INITIALIZER;
 
+int set_lock(int file_fd, int msg_id, int type)
+{
+   struct flock lock;
+   lock.l_whence = SEEK_SET;
+   lock.l_type = type;
+   lock.l_start = msg_id * sizeof(msg);
+   lock.l_len = sizeof(msg);
+   return fcntl(file_fd, F_SETLKW, &lock);
+}
+
 void *deal_with_client(void *cli);
+void set_log(int logfile, msg message, int online);
+
 int main(int argc, char **argv)
 {
    int enable = 1;
@@ -44,14 +64,15 @@ int main(int argc, char **argv)
       exit(1);
    }
 
-   if (stat("log", &st) != 0){ 
-      if(mkdir("log", 0700) < 0){
+   if (stat("log", &st) != 0)
+   {
+      if (mkdir("log", 0700) < 0)
+      {
          perror("create log folder");
          exit(-1);
       }
    }
 
-   
    int listenfd, port;
    int thread_num = atoi(argv[2]);
    listenfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -116,8 +137,13 @@ int main(int argc, char **argv)
 void *deal_with_client(void *con)
 {
    int fd = ((conn *)con)->fd;
-   char host[50];
+   int fifo_r, fifo_w, logfile;
+   int read_len;
+   int num_msg, read_msg;
+   char host[50], path[100];
    fd_set workingR_set, reading_set;
+   client my_client;
+   msg message;
    FD_ZERO(&reading_set);
    FD_SET(fd, &reading_set);
 
@@ -145,7 +171,7 @@ void *deal_with_client(void *con)
          perror("read");
          return 0;
       }
-
+      printf("r or s, buf:<%s>\n", buf);
       //register
       if (buf[0] == 'R')
       {
@@ -177,14 +203,54 @@ void *deal_with_client(void *con)
             clis.push_back(cli);
 
             struct stat st;
-            char logpath[100];
-            sprintf(logpath, "log/%s", cli.name);
-            if (stat(logpath, &st) != 0){ 
-               if(mkdir(logpath, 0700) < 0){
+            char path[100];
+            sprintf(path, "log/%s", cli.name);
+            if (stat(path, &st) != 0)
+            {
+               if (mkdir(path, 0700) < 0)
+               {
                   perror("create personal log folder");
                   exit(-1);
                }
             }
+            sprintf(path, "log/%s/fifo", cli.name);
+            if (stat(path, &st) != 0)
+            {
+               if (mkfifo(path, 0700) < 0)
+               {
+                  perror("create fifo");
+                  exit(-1);
+               }
+            }
+
+            sprintf(path, "log/%s/logfile", cli.name);
+            if (stat(path, &st) != 0)
+            {
+               if ((logfile = open(path, O_CREAT | O_RDWR, 0700)) < 0)
+               {
+                  perror("create logfile");
+                  exit(-1);
+               }
+               num_msg = read_msg = 0;
+               if (pwrite(logfile, &num_msg, sizeof(int), 0) < 0)
+               {
+                  perror("write log");
+                  exit(-1);
+               }
+               if (pwrite(logfile, &read_msg, sizeof(int), sizeof(int)) < 0)
+               {
+                  perror("write log");
+                  exit(-1);
+               }
+               if (close(logfile) < 0) {perror("close log"); exit(-1);}
+            }
+            // else{
+            //    if ((logfile = open(path, O_RDWR, 0700)) < 0)
+            //    {
+            //       perror("open logfile");
+            //       exit(-1);
+            //    }
+            // }
 
             sprintf(buf, "100 OK\n");
             if (write(fd, buf, strlen(buf)) < 0)
@@ -209,12 +275,14 @@ void *deal_with_client(void *con)
             return 0;
          }
       }
-      else if(buf[0] == 'S')//sign in 
+      else if (buf[0] == 'S') //sign in
       {
          //sign
          char *port;
-         name = strtok(buf+1, "#");
+         name = strtok(buf + 1, "#");
          port = strtok(NULL, "\n");
+         strcpy(my_client.name, name);
+         strcpy(my_client.port, port);
          if (pthread_mutex_lock(&m_lock) < 0)
          {
             perror("mutex_lock");
@@ -225,11 +293,19 @@ void *deal_with_client(void *con)
             if (strcmp(clis[i].name, name) == 0)
             {
                //exist
+               sprintf(path, "log/%s/fifo", name);
+               if ((fifo_r = open(path, O_RDONLY | O_NONBLOCK)) < 0)
+               {
+                  perror("open read fifo");
+                  exit(-1);
+               }
+               FD_SET(fifo_r, &reading_set);
                online_num++;
                user_num = i;
                clis[i].online = 1;
                strcpy(clis[i].port, port);
                strcpy(clis[i].host, host);
+               // send user list
                sprintf(buf, "number of accounts online: %d\n", online_num);
                if (write(fd, buf, strlen(buf)) < 0)
                {
@@ -240,7 +316,7 @@ void *deal_with_client(void *con)
                {
                   if (clis[j].online)
                   {
-                     sprintf(buf, "%s#%d#%s#%s\n", clis[j].name,clis[j].online, clis[j].host, clis[j].port);
+                     sprintf(buf, "%s#%d#%s#%s\n", clis[j].name, clis[j].online, clis[j].host, clis[j].port);
                      if (write(fd, buf, strlen(buf)) < 0)
                      {
                         perror("write");
@@ -248,6 +324,32 @@ void *deal_with_client(void *con)
                      }
                   }
                }
+               // send offline msg
+               sprintf(path, "log/%s/logfile", my_client.name);
+               if ((logfile = open(path, O_RDWR)) < 0) { perror("open logfile"); exit(-1); }
+               if(set_lock(logfile, 0, F_WRLCK) < 0) {perror("set lock"); exit(-1); }
+               // retrieve unread message
+               if(pread(logfile, &num_msg, sizeof(int), 0) < 0) {perror("read"); exit(-1); }
+               if(pread(logfile, &read_msg, sizeof(int), sizeof(int)) < 0) {perror("read"); exit(-1); }
+               if(num_msg != read_msg){
+                  sprintf(buf, "you have offline msg\n");
+                  if (write(fd, buf, strlen(buf)) < 0){perror("write"); exit(-1);}
+
+                  printf("num_msg<%d>/read_msg<%d>\n", num_msg, read_msg);
+                  for(int j = read_msg+1; j <= num_msg; j++){
+                     pread(logfile, &message, sizeof(msg), j*sizeof(msg));
+                     printf("unread, from:%s, to:%s, content:<%s>\n", message.from, message.to, message.content);
+                     sprintf(buf, "%s#%s$", message.from, message.content);
+                     if (write(fd, buf, strlen(buf)) < 0){ perror("write"); exit(-1);}
+                  }
+               }
+               else{
+                  sprintf(buf, "no new msg\n");
+                  if (write(fd, buf, strlen(buf)) < 0){perror("write"); exit(-1);}
+               }
+               if(set_lock(logfile, 0, F_UNLCK) < 0) {perror("unlock"); exit(-1); }
+               if(close(logfile)<0) {perror("close logfile"); exit(-1); }
+
                break;
             }
          }
@@ -269,14 +371,14 @@ void *deal_with_client(void *con)
    }
    while (1)
    {
-      // select on packet from client and FIFO
-      
+      // select on packet from client and FIFO(for inter-thread communication)
       memcpy(&workingR_set, &reading_set, sizeof(reading_set));
       select(128, &workingR_set, NULL, NULL, NULL);
-      printf("after sel\n");
-      for(int i = 0; i <= 128; i++){
-         if (FD_ISSET(i, &workingR_set)){
-            printf("fd: %d is set\n", i);
+      for (int i = 0; i <= 128; i++)
+      {
+         if (FD_ISSET(i, &workingR_set) && i == fd)
+         {
+            printf("fd: %d is ready to be read\n", i);
             if (read(fd, buf, sizeof(buf)) < 0)
             {
                perror("read");
@@ -284,17 +386,35 @@ void *deal_with_client(void *con)
             }
             if (buf[0] == 'L') //online userlist
             {
-               if(pthread_mutex_lock(&m_lock)< 0 ){perror("mutex_lock");return 0;}
+               if (pthread_mutex_lock(&m_lock) < 0)
+               {
+                  perror("mutex_lock");
+                  return 0;
+               }
 
-               sprintf(buf,"number of accounts insys : %d\n",clis.size());
-               if(write(fd,buf,strlen(buf)) < 0 ){ perror("write"); return 0;}
-               for(j =0; j<clis.size();j++){
-                  if(1){
-                     sprintf(buf,"%s#%d#%s#%s\n", clis[j].name, clis[j].online, clis[j].host, clis[j].port);
-                     if(write(fd,buf,strlen(buf)) < 0 ){ perror("write"); return 0;}
+               sprintf(buf, "number of accounts insys : %d\n", clis.size());
+               if (write(fd, buf, strlen(buf)) < 0)
+               {
+                  perror("write");
+                  return 0;
+               }
+               for (j = 0; j < clis.size(); j++)
+               {
+                  if (1)
+                  {
+                     sprintf(buf, "%s#%d#%s#%s\n", clis[j].name, clis[j].online, clis[j].host, clis[j].port);
+                     if (write(fd, buf, strlen(buf)) < 0)
+                     {
+                        perror("write");
+                        return 0;
+                     }
                   }
                }
-               if(pthread_mutex_unlock(&m_lock)< 0 ){perror("mutex_unlock");return 0;}
+               if (pthread_mutex_unlock(&m_lock) < 0)
+               {
+                  perror("mutex_unlock");
+                  return 0;
+               }
             }
             else if (buf[0] == 'E')
             {
@@ -319,26 +439,153 @@ void *deal_with_client(void *con)
                }
                close(fd);
                FD_CLR(fd, &reading_set);
+               close(fifo_r);
+               FD_CLR(fifo_r, &reading_set);
                return 0;
             }
             else if (buf[0] == 'M')
             {
                strtok(buf, "$"); // use $ as end, because content may have newline characters
                printf("message, buf<%s>\n", buf);
-               // char *p_username, *p_content;
-               // strtok(buf, "#");
-               // p_username = strtok(NULL, "#");
-               // p_content = strtok(NULL, "#");
-               // for (j = 0; j < clis.size(); j++)
-               // {
 
-               //    if (clis[j].online)
-               //    {
-               //    }
-               // }
+               char *p_to_username, *p_content;
+               strtok(buf, "#");
+               p_to_username = strtok(NULL, "#");
+               p_content = strtok(NULL, "#");
+               assert(strcmp(my_client.name, p_to_username) != 0);
+
+               // todo: add log
+               // add sender's log
+               strcpy(message.from, my_client.name);
+               strcpy(message.to, p_to_username);
+               strcpy(message.content, p_content);
+
+               sprintf(path, "log/%s/logfile", message.from);
+               if ((logfile = open(path, O_RDWR)) < 0) { perror("open logfile"); exit(-1); }
+               set_log(logfile, message, L_ONLINE);
+               if(close(logfile)<0) {perror("close logfile"); exit(-1); }
+
+               // notify receiver's serving thread if receiver is online
+               if (pthread_mutex_lock(&m_lock) < 0)
+               {
+                  perror("mutex_lock");
+                  return 0;
+               }
+               for (j = 0; j < clis.size(); j++)
+               {
+                  if (strcmp(p_to_username, clis[j].name) == 0)
+                  {
+                     if(clis[j].online){
+                        sprintf(path, "log/%s/fifo", message.to);
+                        printf("open path:<%s>\n", path);
+                        if ((fifo_w = open(path, O_WRONLY)) < 0)
+                        {
+                           perror("open write fifo error");
+                           exit(-1);
+                        }
+
+                        sprintf(buf, "Async#%s#%s\n", message.from, message.content);
+                        if (write(fifo_w, buf, strlen(buf)) < 0)
+                        {
+                           perror("write");
+                           exit(-1);
+                        }
+                        if (close(fifo_w) < 0){
+                           perror("close");
+                           exit(-1);
+                        }
+                        sprintf(path, "log/%s/logfile", message.to);
+                        if ((logfile = open(path, O_RDWR)) < 0) { perror("open logfile"); exit(-1); }
+                        set_log(logfile, message, L_ONLINE);
+                        if(close(logfile)<0) {perror("close logfile"); exit(-1); }
+                     }
+                     else{
+                        sprintf(path, "log/%s/logfile", message.to);
+                        if ((logfile = open(path, O_RDWR)) < 0) { perror("open logfile"); exit(-1); }
+                        set_log(logfile, message, L_OFFLINE);
+                        if(close(logfile)<0) {perror("close logfile"); exit(-1); }
+                     }
+                  }
+                  break;
+               }
+               if (pthread_mutex_unlock(&m_lock) < 0)
+               {
+                  perror("mutex_unlock");
+                  return 0;
+               }
+
+               sprintf(buf, "server receives message\n");
+               if (write(fd, buf, strlen(buf)) < 0)
+               {
+                  perror("write");
+                  exit(-1);
+               }
+            }
+         }
+         else if (FD_ISSET(i, &workingR_set) && i == fifo_r)
+         {
+            char *p;
+            read_len = read(fifo_r, buf, sizeof(buf));
+            if (read_len < 0)
+            {
+               perror("read fifo");
+               exit(-1);
+            }
+            else if(read_len > 0){ // close will make fifo readable but read return 0
+               printf("fifo_r: %d is ready to be read\n", i);
+               strtok(buf, "\n");
+               printf("read from fifo:<%s>\n", buf);
+               buf[strlen(buf)+1] = '\0';
+               buf[strlen(buf)] = '\n';
+               if (write(fd, buf, strlen(buf)) < 0)
+               {
+                  perror("send Async message");
+                  exit(-1);
+               }
             }
          }
       }
    }
    return 0;
+}
+
+void set_log(int logfile, msg message, int online){
+   int num_msg, read_msg;
+   if (set_lock(logfile, 0, F_WRLCK) < 0){ // get first entry of file to get access
+      perror("setlock");
+      exit(-1);
+   }
+
+   if (pread(logfile, &num_msg, sizeof(int), 0) < 0)
+   {
+      perror("read log");
+      exit(-1);
+   }
+   num_msg++;
+   if (pwrite(logfile, &num_msg, sizeof(int), 0) < 0){
+      perror("write log");
+      exit(-1);
+   }
+   if (pwrite(logfile, &message, sizeof(msg), num_msg*sizeof(msg)) < 0){
+      perror("write log");
+      exit(-1);
+   }
+
+   if(online == L_ONLINE){
+      if (pread(logfile, &read_msg, sizeof(int), sizeof(int)) < 0)
+      {
+         perror("read log");
+         exit(-1);
+      }
+      read_msg++;
+      if (pwrite(logfile, &read_msg, sizeof(int), sizeof(int)) < 0){
+         perror("write log");
+         exit(-1);
+      }
+   }
+
+   if (set_lock(logfile, 0, F_UNLCK) < 0){
+      perror("freelock");
+      exit(-1);
+   }
 }
