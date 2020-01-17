@@ -37,12 +37,7 @@ void SIGINT_handler(int signo){
    bye(socket_close_on_INT);
    exit(-1);
 }
-void *wait_for_pay(void *listenfd)
-{
-   long long lifd = (long long)listenfd;
-   if (listen((int)lifd, 10) < 0)
-      perror("listen: ");
-}
+void *wait_for_pay(void *listenfd);
 
 int main(int argc, char **argv)
 {
@@ -450,4 +445,36 @@ int send_msg(int sockfd, char username[], char content[]){
       exit(0);
    }
    return 1;
+}
+
+void* wait_for_pay(void *listenfd){
+    long long lifd = (long long)listenfd;
+    if(listen((int)lifd,10) < 0)
+        perror("listen: ");
+    int newfd;
+
+	struct sockaddr_in ac_addr;
+	ac_addr.sin_family = AF_INET;
+	ac_addr.sin_port = htons(listenport);
+	ac_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	int ac_size = sizeof(ac_addr);
+	//boost::threadpool::pool thread_pool(thread_num);
+	while(1){
+		
+		if((newfd = accept(lifd,(struct sockaddr*)&ac_addr,(socklen_t *) &ac_size)) < 0 ){
+			perror("accept ");
+			exit(1);
+		}
+		conn *con =(conn*) malloc(sizeof(conn));
+		con->fd = newfd;
+		strcpy(con->host,inet_ntoa(ac_addr.sin_addr));
+		printf("new connection %d, %s\n",newfd,con->host);
+		pthread_t pnum;
+		//thread_pool.schedule(boost::bind(deal_with_client,(void *)con));
+		pthread_create(&pnum,NULL,&deal_with_client,(void *)con);
+		pthread_detach(pnum);
+
+	}
+
+
 }
