@@ -17,6 +17,10 @@ using namespace std;
 
 #define L_ONLINE 1
 #define L_OFFLINE 0
+typedef struct
+{
+   char name[50];
+} Array;
 
 typedef struct
 {
@@ -24,7 +28,6 @@ typedef struct
    char port[7];
    char host[50];
    char name[100];
-
 } client;
 typedef struct
 {
@@ -39,17 +42,28 @@ typedef struct{
 
 int online_num = 0;
 vector<client> clis; //clients
+vector<int>  locked_log;
+
 pthread_mutex_t m_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t tok_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t f_lock = PTHREAD_MUTEX_INITIALIZER;
 
-int set_lock(int file_fd, int msg_id, int type)
+
+int set_lock(int file_fd, int type)
 {
-   struct flock lock;
-   lock.l_whence = SEEK_SET;
-   lock.l_type = type;
-   lock.l_start = msg_id * sizeof(msg);
-   lock.l_len = sizeof(msg);
-   return fcntl(file_fd, F_SETLKW, &lock);
+   if (pthread_mutex_lock(&f_lock) < 0) { perror("mutex_lock"); return -1; }
+   if(type == F_ULOCK){
+      for(int j = 0; j < locked_log.size(); j++){
+         if(locked_log[j] == file_fd){
+            locked_log.erase(locked_log.begin() + j);
+         }
+      }
+   }
+   else if(type == F_WRLCK || type == F_RDLCK){
+      locked_log.push_back(file_fd);
+   }
+   if (pthread_mutex_unlock(&f_lock) < 0) { perror("mutex_lock"); return -1; }
+   return 0;
 }
 
 void *deal_with_client(void *cli);
@@ -333,7 +347,7 @@ void *deal_with_client(void *con)
                // send offline msg
                sprintf(path, "log/%s/logfile", my_client.name);
                if ((logfile = open(path, O_RDWR)) < 0) { perror("open logfile"); exit(-1); }
-               if(set_lock(logfile, 0, F_WRLCK) < 0) {perror("set lock"); exit(-1); }
+               if(set_lock(logfile, F_WRLCK) < 0) {perror("set lock"); exit(-1); }
                // retrieve unread message
                if(pread(logfile, &num_msg, sizeof(int), 0) < 0) {perror("read"); exit(-1); }
                if(pread(logfile, &read_msg, sizeof(int), sizeof(int)) < 0) {perror("read"); exit(-1); }
@@ -359,7 +373,7 @@ void *deal_with_client(void *con)
                   sprintf(buf, "no new msg\n");
                   if (write(fd, buf, strlen(buf)) < 0){perror("write"); exit(-1);}
                }
-               if(set_lock(logfile, 0, F_UNLCK) < 0) {perror("unlock"); exit(-1); }
+               if(set_lock(logfile, F_UNLCK) < 0) {perror("unlock"); exit(-1); }
                if(close(logfile)<0) {perror("close logfile"); exit(-1); }
 
                break;
@@ -540,6 +554,39 @@ void *deal_with_client(void *con)
                   exit(-1);
                }
             }
+            else if (buf[0] == 'D'){
+               // todo D-type
+               char *p, chat_with[50];
+               if (pthread_mutex_lock(&tok_lock) < 0) { perror("mutex_lock"); return 0; }
+               strtok(buf, "\n");
+               strtok(buf, "#");
+               p = strtok(NULL, "#");
+               strcpy(chat_with, p);
+               printf("chat with<%s>\n", chat_with);
+               sprintf(path, "log/%s/logfile", my_client.name);
+               printf("dump logfile:<%s>\n", path);
+               if((logfile = open(path, O_RDONLY)) < 0){perror("open logfile"); return 0;}
+               if(set_lock(logfile, F_RDLCK) < 0){perror("lock logfile"); return 0;}
+               
+               pread(logfile, &num_msg, sizeof(int), 0);
+               printf("num_msg:%d\n", num_msg);
+               for(int j = 1; j <= num_msg; j++){
+                  pread(logfile, &message, sizeof(msg), j*sizeof(msg));
+                  printf("message:from/p_with<%s/%s>, content<%s>\n", message.from, chat_with, message.content);
+                  if(strcmp(message.from, chat_with) == 0 || strcmp(message.to, chat_with) == 0){
+                     printf("message match:from<%s>, content<%s>\n", message.from, message.content);
+                     sprintf(buf, "%s#%s$", message.from, message.content);
+                     if(write(fd, buf, strlen(buf)) < 0){perror("write"); return 0;}
+                  }
+               }
+               sprintf(buf, "#$");
+               if(write(fd, buf, strlen(buf)) < 0){perror("write"); return 0;}
+
+               if(set_lock(logfile, F_UNLCK) < 0){perror("unlock logfile"); return 0;}
+               if(close(logfile) < 0){perror("close logfile"); return 0;}
+
+               if (pthread_mutex_unlock(&tok_lock) < 0) { perror("mutex_unlock"); return 0; }
+            }
          }
          else if (FD_ISSET(i, &workingR_set) && i == fifo_r)
          {
@@ -572,7 +619,7 @@ void *deal_with_client(void *con)
 
 void set_log(int logfile, msg message, int online){
    int num_msg, read_msg;
-   if (set_lock(logfile, 0, F_WRLCK) < 0){ // get first entry of file to get access
+   if (set_lock(logfile, F_WRLCK) < 0){ // get first entry of file to get access
       perror("setlock");
       exit(-1);
    }
@@ -605,7 +652,7 @@ void set_log(int logfile, msg message, int online){
       }
    }
 
-   if (set_lock(logfile, 0, F_UNLCK) < 0){
+   if (set_lock(logfile, F_UNLCK) < 0){
       perror("freelock");
       exit(-1);
    }
