@@ -315,10 +315,12 @@ int sign(int sockfd)
    {
       handle_list(buf, sockfd, read_len);
       if ((read_len = read(sockfd, buf, 1000)) <= 0){perror("Connection abort:"); exit(0);}
-      buf[read_len] = '\0';
-      if(strstr(buf, "you have offline msg\n") == 0){
+      if(strstr(buf, "you have offline msg\n") != NULL){
          printf("you have offline msg\n");
          handle_offline_msg(buf, sockfd, read_len);
+      }
+      else{
+         printf("no new msg\n");
       }
       return 0;
    }
@@ -385,7 +387,7 @@ void handle_list(char *buf, int sockfd, int read_len)
 void handle_offline_msg(char *buf, int sockfd, int read_len){
    int tmp = 0;
    char* p_from, *p_content;
-
+   //printf("handling<%s>\n", buf);
    strtok(buf, "\n");
    tmp += strlen(buf)+1;
 
@@ -398,14 +400,19 @@ void handle_offline_msg(char *buf, int sockfd, int read_len){
             exit(0);
          }
          tmp = 0;
-         printf("buf:%s\n", buf);
+         //printf("buf:%s\n", buf);
       }
-      p_from = strtok(buf + tmp, "#");
-		tmp += strlen(p_from) + 1;
 
+      p_from = strtok(buf + tmp, "#");
+      //printf("p_from:<%s>\n", p_from);
+		tmp += strlen(p_from) + 1;
+      if(p_from[0] == '$'){
+         break;
+      }
 		p_content = strtok(NULL, "$");
+      //printf("p_content:<%s>\n", p_content);
 		tmp += strlen(p_content) + 1;
-		printf("<%s>:%s", p_from, p_content);
+		printf("<%s>:%s\n", p_from, p_content);
    }
 }
 
