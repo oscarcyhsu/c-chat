@@ -80,9 +80,9 @@ int main(int argc, char **argv)
 {
    int enable = 1;
    struct stat st = {0};
-   if (argc != 3)
+   if (argc != 2)
    {
-      printf("please enter: ./server [port][thread_num]");
+      printf("please enter: ./server [port]");
       exit(1);
    }
 
