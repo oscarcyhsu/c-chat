@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <string>
 #include <stdlib.h>
 #include <unistd.h>
 #include <netinet/in.h>
@@ -16,6 +17,7 @@
 #include <signal.h>
 #include <assert.h>
 #include <openssl/sha.h>
+
 
 using namespace std;
 
@@ -72,6 +74,7 @@ int set_lock(int file_fd, int type)
 
 void *deal_with_client(void *cli);
 void set_log(int logfile, msg message, int online);
+void sha256(const char* str_in, char* str_out);
 
 int main(int argc, char **argv)
 {
@@ -156,7 +159,7 @@ int main(int argc, char **argv)
 void *deal_with_client(void *con)
 {
    int fd = ((conn *)con)->fd;
-   int fifo_r, fifo_w, logfile;
+   int fifo_r, fifo_w, logfile, password;
    int read_len;
    int num_msg, read_msg;
    char host[50], path[100];
@@ -181,6 +184,7 @@ void *deal_with_client(void *con)
    //register or sign
    int i, j, key, user_num = -1;
    char *name;
+   char *passwd;
 
    while (user_num == -1)
    {
@@ -197,7 +201,8 @@ void *deal_with_client(void *con)
          key = 1;
          if (pthread_mutex_lock(&tok_lock) < 0) { perror("mutex_lock"); return 0; }
          name = strtok(buf, "#");
-         name = strtok(NULL, "\n");
+         name = strtok(NULL, "#");
+         passwd = strtok(NULL, "\n");
          if (pthread_mutex_unlock(&tok_lock) < 0) { perror("mutex_unlock"); return 0; }
 
          //lock mutex for check
@@ -226,6 +231,7 @@ void *deal_with_client(void *con)
 
             struct stat st;
             char path[100];
+            char encoded_passwd[100];
             sprintf(path, "log/%s", cli.name);
             if (stat(path, &st) != 0)
             {
@@ -266,6 +272,16 @@ void *deal_with_client(void *con)
                }
                if (close(logfile) < 0) {perror("close log"); exit(-1);}
             }
+
+            sprintf(path, "log/%s/password", cli.name);
+            if ((password = open(path, O_CREAT | O_RDWR | O_TRUNC, 0700)) < 0)
+            {
+               perror("create logfile");
+               exit(-1);
+            }
+            sha256(passwd, encoded_passwd);
+            if(pwrite(password, encoded_passwd, 64, 0) < 0) {perror("write passwd"); exit(-1); }
+            if(close(password) < 0) {perror("close passwd file"); exit(-1); }
             // else{
             //    if ((logfile = open(path, O_RDWR, 0700)) < 0)
             //    {
@@ -300,9 +316,12 @@ void *deal_with_client(void *con)
       else if (buf[0] == 'S') //sign in
       {
          //sign
-         char *port;
+         char *port, *passwd;
+         char encoded_passwd[100];
+         char loaded_passwd[100];
          if (pthread_mutex_lock(&tok_lock) < 0) { perror("mutex_lock"); return 0; }
          name = strtok(buf + 1, "#");
+         passwd = strtok(NULL, "#");
          port = strtok(NULL, "\n");
          if (pthread_mutex_unlock(&tok_lock) < 0) { perror("mutex_unlock"); return 0; }
          strcpy(my_client.name, name);
@@ -317,6 +336,18 @@ void *deal_with_client(void *con)
             if (strcmp(clis[i].name, name) == 0)
             {
                //exist
+               //check password
+               sprintf(path, "log/%s/password", name);
+               if((password = open(path, O_RDONLY)) < 0){ perror("open passwd file"); exit(-1);}
+               sha256(passwd, encoded_passwd);
+               pread(password, loaded_passwd, 64, 0);
+               loaded_passwd[64] = '\0';
+               printf("encoded:%s\nloaded:%s\n", encoded_passwd, loaded_passwd);
+               if(strcmp(encoded_passwd, loaded_passwd) != 0){
+                  user_num = -1;
+                  break;
+               }
+               if(close(password) < 0) {perror("close passwd file"); exit(-1); }
                sprintf(path, "log/%s/fifo", name);
                if ((fifo_r = open(path, O_RDONLY | O_NONBLOCK)) < 0)
                {
@@ -660,4 +691,22 @@ void set_log(int logfile, msg message, int online){
       perror("freelock");
       exit(-1);
    }
+}
+
+void sha256(const char* str_in, char* str_out)
+{
+   char buf[2];
+   unsigned char hash[SHA256_DIGEST_LENGTH];
+   SHA256_CTX sha256;
+   SHA256_Init(&sha256);
+   SHA256_Update(&sha256, str_in, strlen(str_in));
+   SHA256_Final(hash, &sha256);
+   std::string NewString = "";
+   for (int i = 0; i < SHA256_DIGEST_LENGTH; i++)
+   {
+      sprintf(buf, "%02x", hash[i]);
+      NewString = NewString + buf;
+   }
+   strcpy(str_out, NewString.c_str());
+   return;
 }

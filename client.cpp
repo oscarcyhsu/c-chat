@@ -215,7 +215,7 @@ int main(int argc, char **argv)
 
 int reg(int sockfd)
 {
-   char input[50];
+   char input[50], passwd[50];
    int key = 1;
 
    while (key)
@@ -241,8 +241,32 @@ int reg(int sockfd)
       else
          printf("2~20 number or char\n\n");
    }
-   char buf[100];
-   sprintf(buf, "REGISTER#%s\n", input);
+   key = 1;
+   while (key)
+   {
+      printf("Enter your password(2~20 number or alphebat):\n");
+      scanf("%s", passwd);
+      int i, len = strlen(passwd);
+      if (len >= 2 && len <= 50)
+      {
+         key = 0;
+         for (i = 0; i < len; i++)
+         {
+            if (!(passwd[i] >= '0' && passwd[i] <= '9' ||
+                  passwd[i] >= 'a' && passwd[i] <= 'z' ||
+                  passwd[i] >= 'A' && passwd[i] <= 'Z'))
+            {
+               key = 1;
+               printf("number or alphetbat only\n\n");
+               break;
+            }
+         }
+      }
+      else
+         printf("2~20 number or char\n\n");
+   }
+   char buf[300];
+   sprintf(buf, "REGISTER#%s#%s\n", input, passwd);
 
    if (write(sockfd, buf, strlen(buf)) < 0)
    {
@@ -270,6 +294,7 @@ int sign(int sockfd)
 {
 
    char input[50];
+   char passwd[50];
 
    int key = 1;
    while (key)
@@ -296,8 +321,33 @@ int sign(int sockfd)
       else
          printf("2~20 number or char!\n\n");
    }
-   
    key = 1;
+   while (key)
+   {
+      printf("Enter your password(2~20 number or alphebat):\n");
+      scanf("%s", passwd);
+      int i, len = strlen(passwd);
+
+      if (len >= 2 && len <= 50)
+      {
+         key = 0;
+         for (i = 0; i < len; i++)
+         {
+            if (!(passwd[i] >= '0' && passwd[i] <= '9' ||
+                  passwd[i] >= 'a' && passwd[i] <= 'z' ||
+                  passwd[i] >= 'A' && passwd[i] <= 'Z'))
+            {
+               key = 1;
+               printf("number or alphetbat only!!\n\n");
+               break;
+            }
+         }
+      }
+      else
+         printf("2~20 number or char!\n\n");
+   }
+   key = 1;
+
    char port[20];
    while (key)
    {
@@ -337,7 +387,7 @@ int sign(int sockfd)
    pthread_create(&pt, NULL, wait_for_pay, (void *)listenfd);
 
    char buf[1000];
-   sprintf(buf, "S#%s#%s\n", input, port);
+   sprintf(buf, "S#%s#%s#%s\n", input, passwd, port);
    if (write(sockfd, buf, strlen(buf)) < 0)
    {
       perror("Error while sending to server:");
