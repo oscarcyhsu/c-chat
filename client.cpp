@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <assert.h>
+#include <fcntl.h>
 
 using namespace std;
 
@@ -46,6 +47,7 @@ vector<file> files;
 vector<client> clis;
 pthread_mutex_t cli_lock = PTHREAD_MUTEX_INITIALIZER;
 int socket_close_on_INT;
+int listenport;
 char my_username[50];
 
 int reg(int sockfd);
@@ -80,7 +82,7 @@ int main(int argc, char **argv)
 
    printf("Conneting with the server, please wait.\n");
    int sockfd;
-
+   int enable = 1;
    struct sockaddr_in addr;
    char* p_from, *p_to, *p_content;
 
@@ -91,6 +93,11 @@ int main(int argc, char **argv)
    {
       perror("socket error:");
       exit(0);
+   }
+   if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
+   {
+      perror("setsockopt(SO_REUSEADDR) failed");
+      exit(1);
    }
    if (connect(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr)) < 0)
    {
@@ -314,6 +321,7 @@ int sign(int sockfd)
    addr.sin_port = htons(atoi(port));
    addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
+   listenport = atoi(port);
    int listenfd;
    if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
    {
@@ -514,7 +522,7 @@ void* wait_for_pay(void *listenfd){
 		conn *con =(conn*) malloc(sizeof(conn));
 		con->fd = newfd;
 		strcpy(con->host,inet_ntoa(ac_addr.sin_addr));
-		printf("new connection from %s\n",newfd,con->host);
+		printf("new connection from %s\n",con->host);
 		pthread_t pnum;
 		//thread_pool.schedule(boost::bind(deal_with_client,(void *)con));
 		pthread_create(&pnum,NULL,&deal_with_client,(void *)con);
@@ -528,22 +536,23 @@ void* deal_with_client(void *con){
 	int fd = ((conn *) con) -> fd;
 	char host[50];
 	strcpy(host,((conn *) con) -> host);
+   printf("con\n");
 	free(con);
 	
 
 	char buf[2048];
-	//give pubkey
 
 	
 	//accept
 	sprintf(buf,"connection accepted\n");
    file f1;
-	if(write(fd,buf,keylen)<0){perror("write"); return 0;}
+	if(write(fd,buf,strlen(buf))<0){perror("write"); return 0;}
    int name_siz,file_siz;
    if(read(fd,&name_siz,sizeof(int))< 0){perror("read name size"); return 0;}
   
+   printf("name size :%d\n",name_siz);
 
-   if(read(fd,f1.name,name_siz)){perror("read file name") return 0;}
+   if(read(fd,f1.name,name_siz)<0){perror("read file name"); return 0;}
    f1.name[name_siz] = '\0';
    
    
@@ -551,16 +560,16 @@ void* deal_with_client(void *con){
    if(read(fd,&f1.file_size,sizeof(int))<0){perror("read file size "); return 0;}
    
    pthread_mutex_lock(&m_lock);
-   f1.content = malloc(file_siz);
+   f1.content = (char*) malloc(file_siz);
    pthread_mutex_unlock(&m_lock);
    
-   tmp = 0;
+   int tmp = 0;
    while(tmp < f1.file_size){
       int len;
       if( (len = read(fd, f1.content + tmp, f1.file_size-tmp)) < 0){perror("reading file"); return 0;}
       tmp += len;
    }
-   len = read(fd,buf,100);
+   int len = read(fd,buf,100);
    if(len < 0){perror("read user name error"); return 0;}
    
 
@@ -588,15 +597,13 @@ int transfer(){
    printf("Enter the filename with path:\n");
    scanf("%s",file_name);
    struct stat st;
-   st = NULL;
-   stat(file_name, &st);
-   if (st == NULL){
+   if (stat(file_name, &st) < 0){
       perror("Invalid file");
       return -1;
    }
    file_size = st.st_size;
    pthread_mutex_lock(&m_lock);
-   file *f1 = malloc(sizeof(file));
+   file *f1 = (file*) malloc(sizeof(file));
    pthread_mutex_unlock(&m_lock);
 
    f1->file_size = file_size;
@@ -604,12 +611,12 @@ int transfer(){
 
    
 
-   printf("enter the user you want to transfer\n")
+   printf("enter the user you want to transfer\n");
    scanf("%s",f1->user);
 
    pthread_t pnum;
 
-   pthread_create(&pnum,NULL,&BackTran,(void *)&f1);
+   pthread_create(&pnum,NULL,&BackTran,(void *)f1);
    pthread_detach(pnum);
 
    return 0;  
@@ -621,20 +628,21 @@ void* BackTran(void *f){
    file f1;
    memcpy(&f1,f,sizeof(file));
    pthread_mutex_lock(&m_lock);
-   free(f1);
-   pthread_mutex_lock(&m_lock);
+   printf("backtran\n");
+   free(f);
+   pthread_mutex_unlock(&m_lock);
    pthread_mutex_lock(&cli_lock);
    int user_num = find_user(f1.user);
-
+   printf("user_num %d\n",user_num);
+   struct sockaddr_in addr;
    if(user_num!= -1){
       if(clis[user_num].online)
       {
          printf("Conneting with the user, please wait.\n");
-         struct sockaddr_in addr;
 
          addr.sin_family = AF_INET;
-         addr.sin_port = htons(clis[i].port);
-         addr.sin_addr.s_addr = inet_addr(clis[i].host);
+         addr.sin_port = htons(clis[user_num].port);
+         addr.sin_addr.s_addr = inet_addr(clis[user_num].host);
          
          if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
          {
@@ -648,25 +656,26 @@ void* BackTran(void *f){
    }
       
    pthread_mutex_unlock(&cli_lock);
+   printf("user num after %d\n",user_num);
    if (user_num == -1){
       printf("No the user: %s online.",f1.user);
 
-      return -1;
+      return (void*) -1;
    }
-
+   printf("connection starting\n");
    if(connect(sockfd,(struct sockaddr *)&addr,sizeof(struct sockaddr)) < 0)
    {
       perror("Connetion error:");
       printf("Maybe the user is offline or abort.\n");
 
-      return -1;
+      return (void*) -1;
    }
    char buf[100];
-   if(read(sockfd,buf,100)<0){perror("Not accept"); free(f1); return 0;}
+   if(read(sockfd,buf,100)<0){perror("Not accept"); return 0;}
    pthread_mutex_lock(&m_lock);
-   char *content = malloc(file_size);
-   pthread_mutex_lock(&m_lock);
-   int filefd = open(f1.name,O_RDONLY);
+   char *content = (char*) malloc(f1.file_size);
+   pthread_mutex_unlock(&m_lock);
+   int filefd = open(f1.name, O_RDONLY);
    if(filefd< 0){perror("open error"); printf("check if the file exist\n"); return 0;   }
    
    if(read(filefd,content,f1.file_size)<0){perror("read file"); return 0;}
@@ -680,7 +689,7 @@ void* BackTran(void *f){
    int tmp = 0;
    int len;
    while(tmp < f1.file_size){
-      len = write(sockfd,context + tmp, file_size-tmp);
+      len = write(sockfd, content + tmp, f1.file_size-tmp);
       if(len < 0){perror("error while transfering file"); return 0;}
       tmp += len;
    }
@@ -697,7 +706,7 @@ void* BackTran(void *f){
 int save_file(){
    pthread_mutex_lock(&files_lock);
    char name[100];
-   i = 0;
+   int i = 0;
    for(int i =0;i<files.size();i++)
    {
       printf("file from %s, name: %s, size: %d\n Save? [Y/N]\n",files[i].user,files[i].name,files[i].file_size);
@@ -707,17 +716,17 @@ int save_file(){
          printf("enter the file name to save\n");
          scanf("%s",name);
          int fd = open(name,O_WRONLY|O_CREAT|O_TRUNC);
-         if(write(fd,files[i].context,files[i].file_size)< 0 ){perror("error while writing the file");}
+         if(write(fd,files[i].content,files[i].file_size)< 0 ){perror("error while writing the file");}
       }
    }
-   files.clear();
-
+   while(!files.empty()){
+      popfile();
+   }
+   pthread_mutex_unlock(&files_lock);
 }
-
 int find_user(char *name){
-   for(int i=0;i<clis.size(),;i++){
+   for(int i=0;i<clis.size();i++){
       if(strcmp(clis[i].name,name) == 0){
-         pthread_mutex_unlock(&cli_lock);
          return i;
       }
    }
@@ -727,7 +736,7 @@ int find_user(char *name){
 int popfile(){
 
    pthread_mutex_lock(&m_lock);
-   free(files[size()-1].content);
+   free(files[files.size()-1].content);
    pthread_mutex_unlock(&m_lock);
    files.pop_back();
 }
