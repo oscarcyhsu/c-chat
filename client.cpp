@@ -50,10 +50,12 @@ int sign(int sockfd);
 int transfer(int sockfd);
 int bye(int sockfd);
 int save_file();
-
+int popfile();
+int transfer();
+void* BackTran(void *f);
 void handle_list(char *buf, int sockfd, int read_len);
 void handle_offline_msg(char *buf, int sockfd, int read_len);
-int find_user(char *name)
+int find_user(char *name);
 
 int send_msg(int sockfd, char username[], char content[]);
 void SIGINT_handler(int signo){
@@ -62,6 +64,7 @@ void SIGINT_handler(int signo){
 }
 void *wait_for_pay(void *listenfd);
 void *deal_with_client(void *con);
+
 int main(int argc, char **argv)
 {
    if (argc != 3)
@@ -132,7 +135,7 @@ int main(int argc, char **argv)
             printf("input:<%s>", input);
             if (input[0] == 'Q')
                bye(sockfd);
-            else if (input[0] == 'U'){
+            else if (input[0] == 'U'|| input[0] == 'T'){
                sprintf(buf, "List\n");
                if (write(sockfd, buf, strlen(buf)) <= 0)
                {
@@ -146,6 +149,8 @@ int main(int argc, char **argv)
                }
                printf("read:<%s>, readlen:<%d>", buf, read_len);
                handle_list(buf, sockfd, read_len);
+               if(input[0] == 'T')
+                  transfer();
             }
             else if( input[0] == 'M'){
                //send to user
@@ -451,8 +456,6 @@ int bye(int sockfd)
       exit(0);
    }
 }
-
-
 
 int send_msg(int sockfd, char username[], char content[]){
    char buf[1100];
