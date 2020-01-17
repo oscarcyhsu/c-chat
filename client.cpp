@@ -493,7 +493,6 @@ int send_msg(int sockfd, char username[], char content[]){
    return 1;
 }
 
-<<<<<<< HEAD
 void* wait_for_pay(void *listenfd){
     long long lifd = (long long)listenfd;
     if(listen((int)lifd,10) < 0)
