@@ -16,19 +16,8 @@
 using namespace std;
 
 int main(int argc, char **argv){
-   int fd;
-   int a = 5, b = 10;
-   int c = 0, d = 0;
-   fd = open("log", O_RDWR | O_CREAT, 0700);
-   if(fd < 0){
-      perror("open");
-      exit(-1);
-   }
-   pwrite(fd, &a, sizeof(int), 0);
-   pwrite(fd, &b, sizeof(int), 16);
-
-   pread(fd, &c, sizeof(int), 0);
-   pread(fd, &d, sizeof(int), 16);
-   printf("%d %d\n", c, d);
+   char str[5] = "#123";
+   char* p = strtok(str, "#");
+   printf("%s\n", p);
 
 }

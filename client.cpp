@@ -477,7 +477,7 @@ void handle_list(char *buf, int sockfd, int read_len)
 		clis.push_back(cli);
 		// printf("port %d\n", cli.port);
 
-		printf("User %d\nUser name : %s\nUser IP : %s\nUser port : %d\n\n", clis.size() - 1, clis[i].name, clis[i].host, clis[i].port);
+		printf("User %d\nUser name : %s\nUser Online:%d\nUser IP : %s\nUser port : %d\n\n", clis.size() - 1, clis[i].name, clis[i].online, clis[i].host, clis[i].port);
 	}
 }
 
@@ -803,10 +803,10 @@ int popfile(){
 }
 
 int dump_history(int sockfd, char* withwho){
-   char buf[1100], read_len;
+   char buf[1100];
    char *p_who, *p_from, *p_content;
 
-   int tmp = 0, readlen = 0;
+   int tmp = 0, read_len = 0;
 
    sprintf(buf, "D#%s\n", withwho);
    if (write(sockfd, buf, strlen(buf)) <= 0)

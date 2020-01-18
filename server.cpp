@@ -17,7 +17,7 @@
 #include <signal.h>
 #include <assert.h>
 #include <openssl/sha.h>
-
+#include <errno.h>
 
 using namespace std;
 
@@ -627,7 +627,7 @@ void *deal_with_client(void *con)
          {
             char *p;
             read_len = read(fifo_r, buf, sizeof(buf));
-            if (read_len < 0)
+            if (read_len < 0 && errno != EAGAIN)
             {
                perror("read fifo");
                exit(-1);
