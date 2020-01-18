@@ -11,6 +11,9 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/stat.h>
+#include <signal.h>
+#include <assert.h>
+#include <fcntl.h>
 
 using namespace std;
 
@@ -44,6 +47,8 @@ vector<file> files;
 vector<client> clis;
 pthread_mutex_t cli_lock = PTHREAD_MUTEX_INITIALIZER;
 int socket_close_on_INT;
+int listenport;
+char my_username[50];
 
 int reg(int sockfd);
 int sign(int sockfd);
@@ -58,6 +63,8 @@ void handle_offline_msg(char *buf, int sockfd, int read_len);
 int find_user(char *name);
 
 int send_msg(int sockfd, char username[], char content[]);
+int dump_history(int sockfd, char* withwho);
+
 void SIGINT_handler(int signo){
    bye(socket_close_on_INT);
    exit(-1);
@@ -75,9 +82,9 @@ int main(int argc, char **argv)
 
    printf("Conneting with the server, please wait.\n");
    int sockfd;
-
+   int enable = 1;
    struct sockaddr_in addr;
-   char* p_from, *p_content;
+   char* p_from, *p_to, *p_content;
 
    addr.sin_family = AF_INET;
    addr.sin_port = htons(atoi(argv[2]));
@@ -86,6 +93,11 @@ int main(int argc, char **argv)
    {
       perror("socket error:");
       exit(0);
+   }
+   if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
+   {
+      perror("setsockopt(SO_REUSEADDR) failed");
+      exit(1);
    }
    if (connect(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr)) < 0)
    {
@@ -114,7 +126,7 @@ int main(int argc, char **argv)
       else if (input[0] == '1')
          key = sign(sockfd);
    }
-   printf("Enter (Q: quit, U: update the list, M: message):\n");
+   printf("Enter (Q: quit, U: update the list, M: message, T: transfer a file, F: checkout recv files):\n");
    fd_set reading_set, workingR_set;
    FD_ZERO(&reading_set);
    FD_SET(STDIN_FILENO, &reading_set);
@@ -132,7 +144,7 @@ int main(int argc, char **argv)
                exit(-1);
             }
             input[read_len - 1] = '\0'; // newline -> \0
-            printf("input:<%s>", input);
+            printf("input:<%s>\n", input);
             if (input[0] == 'Q')
                bye(sockfd);
             else if (input[0] == 'U'|| input[0] == 'T'){
@@ -147,7 +159,7 @@ int main(int argc, char **argv)
                   perror("Connection abort:");
                   exit(0);
                }
-               printf("read:<%s>, readlen:<%d>", buf, read_len);
+               //printf("read:<%s>, readlen:<%d>", buf, read_len);
                handle_list(buf, sockfd, read_len);
                if(input[0] == 'T')
                   transfer();
@@ -168,7 +180,16 @@ int main(int argc, char **argv)
                else{ sprintf(content, "%s\0", p);}
                send_msg(sockfd, username, content);
             }
-            printf("Enter (Q: quit, U: update the list, M: message):\n");
+            else if( input[0] == 'D'){ //dump history
+               strtok(input, "-");
+               p_to = strtok(NULL, "-");
+               printf("dump history with <%s>\n", p_to);
+               dump_history(sockfd, p_to);
+            }
+            else if(input[0] == 'F'){
+               save_file();
+            }
+            printf("Enter (Q: quit, U: update the list, M: message, T: transfer a file, F: checkout recv files):\n");
          }
 
          else if(FD_ISSET(i, &workingR_set) && i == sockfd){ // async message
@@ -177,6 +198,7 @@ int main(int argc, char **argv)
                perror("read async message");
                exit(-1);
             }
+            printf("sockfd buf:<%s>\n", buf);
             strtok(buf, "\n");
             assert(buf[0] == 'A'); // check async message
             printf("new message!\n");
@@ -196,7 +218,7 @@ int main(int argc, char **argv)
 
 int reg(int sockfd)
 {
-   char input[50];
+   char input[50], passwd[50];
    int key = 1;
 
    while (key)
@@ -222,8 +244,32 @@ int reg(int sockfd)
       else
          printf("2~20 number or char\n\n");
    }
-   char buf[100];
-   sprintf(buf, "REGISTER#%s\n", input);
+   key = 1;
+   while (key)
+   {
+      printf("Enter your password(2~20 number or alphebat):\n");
+      scanf("%s", passwd);
+      int i, len = strlen(passwd);
+      if (len >= 2 && len <= 50)
+      {
+         key = 0;
+         for (i = 0; i < len; i++)
+         {
+            if (!(passwd[i] >= '0' && passwd[i] <= '9' ||
+                  passwd[i] >= 'a' && passwd[i] <= 'z' ||
+                  passwd[i] >= 'A' && passwd[i] <= 'Z'))
+            {
+               key = 1;
+               printf("number or alphetbat only\n\n");
+               break;
+            }
+         }
+      }
+      else
+         printf("2~20 number or char\n\n");
+   }
+   char buf[300];
+   sprintf(buf, "REGISTER#%s#%s\n", input, passwd);
 
    if (write(sockfd, buf, strlen(buf)) < 0)
    {
@@ -251,6 +297,7 @@ int sign(int sockfd)
 {
 
    char input[50];
+   char passwd[50];
 
    int key = 1;
    while (key)
@@ -278,6 +325,32 @@ int sign(int sockfd)
          printf("2~20 number or char!\n\n");
    }
    key = 1;
+   while (key)
+   {
+      printf("Enter your password(2~20 number or alphebat):\n");
+      scanf("%s", passwd);
+      int i, len = strlen(passwd);
+
+      if (len >= 2 && len <= 50)
+      {
+         key = 0;
+         for (i = 0; i < len; i++)
+         {
+            if (!(passwd[i] >= '0' && passwd[i] <= '9' ||
+                  passwd[i] >= 'a' && passwd[i] <= 'z' ||
+                  passwd[i] >= 'A' && passwd[i] <= 'Z'))
+            {
+               key = 1;
+               printf("number or alphetbat only!!\n\n");
+               break;
+            }
+         }
+      }
+      else
+         printf("2~20 number or char!\n\n");
+   }
+   key = 1;
+
    char port[20];
    while (key)
    {
@@ -301,6 +374,7 @@ int sign(int sockfd)
    addr.sin_port = htons(atoi(port));
    addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
+   listenport = atoi(port);
    int listenfd;
    if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
    {
@@ -316,14 +390,14 @@ int sign(int sockfd)
    pthread_create(&pt, NULL, wait_for_pay, (void *)listenfd);
 
    char buf[1000];
-   sprintf(buf, "S#%s#%s\n", input, port);
-
+   sprintf(buf, "S#%s#%s#%s\n", input, passwd, port);
    if (write(sockfd, buf, strlen(buf)) < 0)
    {
       perror("Error while sending to server:");
       exit(0);
    }
 
+   strcpy(my_username, input);
    int read_len;
 
    if ((read_len = read(sockfd, buf, 1000)) <= 0)
@@ -332,16 +406,18 @@ int sign(int sockfd)
       exit(0);
    }
 
-   printf("readlen %d\n", read_len);
+   //printf("readlen %d\n", read_len);
 
    if (strstr(buf, "220 AUTH_FAIL") == NULL)
    {
       handle_list(buf, sockfd, read_len);
       if ((read_len = read(sockfd, buf, 1000)) <= 0){perror("Connection abort:"); exit(0);}
-      buf[read_len] = '\0';
-      if(strstr(buf, "you have offline msg\n") == 0){
+      if(strstr(buf, "you have offline msg\n") != NULL){
          printf("you have offline msg\n");
          handle_offline_msg(buf, sockfd, read_len);
+      }
+      else{
+         printf("no new msg\n");
       }
       return 0;
    }
@@ -368,7 +444,7 @@ void handle_list(char *buf, int sockfd, int read_len)
 	for (i = 0; i < ac_num; i++)
 	{
 		client cli;
-      printf("tmp/readlen:%d/%d\n", tmp, read_len);
+      //printf("tmp/readlen:%d/%d\n", tmp, read_len);
 		if (tmp == read_len)
 		{
          if ((read_len = read(sockfd, buf, 1000)) <= 0)
@@ -377,7 +453,7 @@ void handle_list(char *buf, int sockfd, int read_len)
             exit(0);
          }
          tmp = 0;
-         printf("buf:%s\n", buf);
+         //printf("buf:%s\n", buf);
 		}
 
 		user = strtok(buf + tmp, "#");
@@ -408,7 +484,7 @@ void handle_list(char *buf, int sockfd, int read_len)
 void handle_offline_msg(char *buf, int sockfd, int read_len){
    int tmp = 0;
    char* p_from, *p_content;
-
+   //printf("handling<%s>\n", buf);
    strtok(buf, "\n");
    tmp += strlen(buf)+1;
 
@@ -421,14 +497,19 @@ void handle_offline_msg(char *buf, int sockfd, int read_len){
             exit(0);
          }
          tmp = 0;
-         printf("buf:%s\n", buf);
+         //printf("buf:%s\n", buf);
       }
-      p_from = strtok(buf + tmp, "#");
-		tmp += strlen(p_from) + 1;
 
+      p_from = strtok(buf + tmp, "#");
+      //printf("p_from:<%s>\n", p_from);
+		tmp += strlen(p_from) + 1;
+      if(p_from[0] == '$'){
+         break;
+      }
 		p_content = strtok(NULL, "$");
+      //printf("p_content:<%s>\n", p_content);
 		tmp += strlen(p_content) + 1;
-		printf("<%s>:%s", p_from, p_content);
+		printf("<%s>:%s\n", p_from, p_content);
    }
 }
 
@@ -491,10 +572,12 @@ void* wait_for_pay(void *listenfd){
 			perror("accept ");
 			exit(1);
 		}
+      pthread_mutex_lock(&m_lock);
 		conn *con =(conn*) malloc(sizeof(conn));
+      pthread_mutex_unlock(&m_lock);
 		con->fd = newfd;
 		strcpy(con->host,inet_ntoa(ac_addr.sin_addr));
-		printf("new connection from %s\n",newfd,con->host);
+		printf("new connection from %s\n",con->host);
 		pthread_t pnum;
 		//thread_pool.schedule(boost::bind(deal_with_client,(void *)con));
 		pthread_create(&pnum,NULL,&deal_with_client,(void *)con);
@@ -508,22 +591,23 @@ void* deal_with_client(void *con){
 	int fd = ((conn *) con) -> fd;
 	char host[50];
 	strcpy(host,((conn *) con) -> host);
+   printf("con\n");
 	free(con);
 	
 
 	char buf[2048];
-	//give pubkey
 
 	
 	//accept
 	sprintf(buf,"connection accepted\n");
    file f1;
-	if(write(fd,buf,keylen)<0){perror("write"); return 0;}
-   int name_siz,file_siz;
+	if(write(fd,buf,strlen(buf))<0){perror("write"); return 0;}
+   int name_siz;
    if(read(fd,&name_siz,sizeof(int))< 0){perror("read name size"); return 0;}
   
+   printf("name size :%d\n",name_siz);
 
-   if(read(fd,f1.name,name_siz)){perror("read file name") return 0;}
+   if(read(fd,f1.name,name_siz)<0){perror("read file name"); return 0;}
    f1.name[name_siz] = '\0';
    
    
@@ -531,16 +615,18 @@ void* deal_with_client(void *con){
    if(read(fd,&f1.file_size,sizeof(int))<0){perror("read file size "); return 0;}
    
    pthread_mutex_lock(&m_lock);
-   f1.content = malloc(file_siz);
+   f1.content = (char*) malloc(f1.file_size);
    pthread_mutex_unlock(&m_lock);
    
-   tmp = 0;
+   int tmp = 0;
+   printf("receiving %d bytes file\n",f1.file_size);
    while(tmp < f1.file_size){
       int len;
-      if( (len = read(fd, f1.content + tmp, f1.file_size-tmp)) < 0){perror("reading file"); return 0;}
+      printf("file %s %d %c finished\n",f1.name,tmp*100/f1.file_size,'%');
+      if( (len = read(fd, f1.content + tmp, f1.file_size-tmp)) < 0){printf("at tmp:%d \n",tmp);perror("reading file"); return 0;}
       tmp += len;
    }
-   len = read(fd,buf,100);
+   int len = read(fd,buf,100);
    if(len < 0){perror("read user name error"); return 0;}
    
 
@@ -568,15 +654,14 @@ int transfer(){
    printf("Enter the filename with path:\n");
    scanf("%s",file_name);
    struct stat st;
-   st = NULL;
-   stat(file_name, &st);
-   if (st == NULL){
+   if (stat(file_name, &st) < 0){
       perror("Invalid file");
       return -1;
    }
    file_size = st.st_size;
+   printf("%s with file size %d\n",file_name,file_size);
    pthread_mutex_lock(&m_lock);
-   file *f1 = malloc(sizeof(file));
+   file *f1 = (file*) malloc(sizeof(file));
    pthread_mutex_unlock(&m_lock);
 
    f1->file_size = file_size;
@@ -584,12 +669,12 @@ int transfer(){
 
    
 
-   printf("enter the user you want to transfer\n")
+   printf("enter the user you want to transfer\n");
    scanf("%s",f1->user);
 
    pthread_t pnum;
 
-   pthread_create(&pnum,NULL,&BackTran,(void *)&f1);
+   pthread_create(&pnum,NULL,&BackTran,(void *)f1);
    pthread_detach(pnum);
 
    return 0;  
@@ -601,20 +686,21 @@ void* BackTran(void *f){
    file f1;
    memcpy(&f1,f,sizeof(file));
    pthread_mutex_lock(&m_lock);
-   free(f1);
-   pthread_mutex_lock(&m_lock);
+   printf("backtraning\n");
+   free(f);
+   pthread_mutex_unlock(&m_lock);
    pthread_mutex_lock(&cli_lock);
    int user_num = find_user(f1.user);
-
+   printf("user_num %d\n",user_num);
+   struct sockaddr_in addr;
    if(user_num!= -1){
       if(clis[user_num].online)
       {
          printf("Conneting with the user, please wait.\n");
-         struct sockaddr_in addr;
 
          addr.sin_family = AF_INET;
-         addr.sin_port = htons(clis[i].port);
-         addr.sin_addr.s_addr = inet_addr(clis[i].host);
+         addr.sin_port = htons(clis[user_num].port);
+         addr.sin_addr.s_addr = inet_addr(clis[user_num].host);
          
          if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
          {
@@ -628,25 +714,26 @@ void* BackTran(void *f){
    }
       
    pthread_mutex_unlock(&cli_lock);
+   printf("user num after %d\n",user_num);
    if (user_num == -1){
       printf("No the user: %s online.",f1.user);
 
-      return -1;
+      return (void*) -1;
    }
-
+   printf("connection starting\n");
    if(connect(sockfd,(struct sockaddr *)&addr,sizeof(struct sockaddr)) < 0)
    {
       perror("Connetion error:");
       printf("Maybe the user is offline or abort.\n");
 
-      return -1;
+      return (void*) -1;
    }
    char buf[100];
-   if(read(sockfd,buf,100)<0){perror("Not accept"); free(f1); return 0;}
+   if(read(sockfd,buf,100)<0){perror("Not accept"); return 0;}
    pthread_mutex_lock(&m_lock);
-   char *content = malloc(file_size);
-   pthread_mutex_lock(&m_lock);
-   int filefd = open(f1.name,O_RDONLY);
+   char *content = (char*) malloc(f1.file_size);
+   pthread_mutex_unlock(&m_lock);
+   int filefd = open(f1.name, O_RDONLY);
    if(filefd< 0){perror("open error"); printf("check if the file exist\n"); return 0;   }
    
    if(read(filefd,content,f1.file_size)<0){perror("read file"); return 0;}
@@ -660,8 +747,8 @@ void* BackTran(void *f){
    int tmp = 0;
    int len;
    while(tmp < f1.file_size){
-      len = write(sockfd,context + tmp, file_size-tmp);
-      if(len < 0){perror("error while transfering file"); return 0;}
+      len = write(sockfd, content + tmp, f1.file_size-tmp);
+      if(len < 0){perror("error while transfering file"); printf("where tmp = %d\n",tmp); return 0;}
       tmp += len;
    }
 
@@ -677,27 +764,30 @@ void* BackTran(void *f){
 int save_file(){
    pthread_mutex_lock(&files_lock);
    char name[100];
-   i = 0;
+   int i = 0;
    for(int i =0;i<files.size();i++)
    {
       printf("file from %s, name: %s, size: %d\n Save? [Y/N]\n",files[i].user,files[i].name,files[i].file_size);
       char c;
-      scanf("%c",&c);
+      scanf(" %c",&c);
+      printf("Your choose <%c>\n",c);
       if(c == 'Y'){
          printf("enter the file name to save\n");
          scanf("%s",name);
-         int fd = open(name,O_WRONLY|O_CREAT|O_TRUNC);
-         if(write(fd,files[i].context,files[i].file_size)< 0 ){perror("error while writing the file");}
+         printf("saving file: %s\n",name);
+         int fd = open(name,O_WRONLY|O_CREAT|O_TRUNC,S_IRWXU);
+         if(write(fd,files[i].content,files[i].file_size)< 0 ){perror("error while writing the file");}
+         close(fd);
       }
    }
-   files.clear();
-
+   while(!files.empty()){
+      popfile();
+   }
+   pthread_mutex_unlock(&files_lock);
 }
-
 int find_user(char *name){
-   for(int i=0;i<clis.size(),;i++){
+   for(int i=0;i<clis.size();i++){
       if(strcmp(clis[i].name,name) == 0){
-         pthread_mutex_unlock(&cli_lock);
          return i;
       }
    }
@@ -707,8 +797,60 @@ int find_user(char *name){
 int popfile(){
 
    pthread_mutex_lock(&m_lock);
-   free(files[size()-1].content);
+   free(files[files.size()-1].content);
    pthread_mutex_unlock(&m_lock);
    files.pop_back();
+}
+
+int dump_history(int sockfd, char* withwho){
+   char buf[1100], read_len;
+   char *p_who, *p_from, *p_content;
+
+   int tmp = 0, readlen = 0;
+
+   sprintf(buf, "D#%s\n", withwho);
+   if (write(sockfd, buf, strlen(buf)) <= 0)
+   {
+      perror("error while writing to server:");
+      exit(0);
+   }
+   // todo parse return history
+   while(1){
+      if (tmp == read_len)
+		{
+         if ((read_len = read(sockfd, buf, 1000)) <= 0)
+         {
+            perror("Connection abort:");
+            exit(0);
+         }
+         tmp = 0;
+         //printf("buf:%s\n", buf);
+      }
+
+      p_from = strtok(buf + tmp, "#");
+      //printf("p_from:<%s>\n", p_from);
+		tmp += strlen(p_from) + 1;
+      if(p_from[0] == '$'){
+         printf("end of history\n");
+         return 0;
+      }
+		p_content = strtok(NULL, "$");
+      //printf("p_content:<%s>\n", p_content);
+		tmp += strlen(p_content) + 1;
+      if(strcmp(my_username, p_from) == 0)
+		   printf("<%s>\n%s\n\n", p_from, p_content);
+      else{
+         int len;
+         len = strlen(p_from)+2;
+         for(int j = 0; j < 20-len;j++)
+            printf(" ");
+         printf("<%s>\n", p_from);
+
+         len = strlen(p_content);
+         for(int j = 0; j < 20-len;j++)
+            printf(" ");
+         printf("%s\n\n", p_content);
+      }
+   }
 }
 
